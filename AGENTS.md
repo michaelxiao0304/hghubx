@@ -1,7 +1,8 @@
 # HGhubX 迭代与构建指南
 
 本文件适用于整个仓库。用中文沟通，先确认实际运行的版本和代码状态，再修改或打包。
-以下基线来自 2026-11-14 对版本 1.3.0、提交 `15c1d5c` 的代码检查及本地构建；后续改动以实际源码和构建结果为准。
+当前以 `zxsos/HGhubX` 2.0.0、提交 `bebfb7a` 为实现基线。按用户决定，界面、数据 API、播放器、动态选线和构建流程跟随上游，保留 fork 的 NAT64 网络兼容、文档及本地数据迁移。
+1.3.0 完整迭代与打包记录归档在 [docs/build-history/2026-11-14-v1.3.0.md](docs/build-history/2026-11-14-v1.3.0.md)，不要将旧架构说明当作当前实现。
 
 ## 项目定位与技术结构
 
@@ -12,35 +13,45 @@
 
 | 位置 | 职责 |
 | --- | --- |
-| `src/App.tsx`、`src/pages/`、`src/components/` | 桌面和移动端界面、页面导航、设置及接入地址入口 |
-| `src/store/index.tsx`、`src/store/` | 应用状态、个人记录、播放偏好、接入地址状态 |
-| `src/data/commands.ts`、`src/data/client.ts` | 业务命令构造及统一 `data_call` IPC 入口 |
-| `src/platform.ts` | 接入地址、日志、更新、方向控制等壳层命令 |
-| `src/player/` | 播放源选择、播放引擎、控制栏、生命周期、拖动进度及诊断 |
-| `src-tauri/src/commands/`、`domain/`、`services/` | 原生命令入口、领域命令及业务编排 |
-| `src-tauri/src/adapters/edge_v1/` | 上游请求、DTO 与响应字段映射 |
-| `src-tauri/src/infra/source.rs`、`session.rs` | 本机接入地址配置及按来源隔离的登录会话 |
-| `src-tauri/src/net.rs`、`network_policy.rs`、`media.rs` | 网络、代理、安全校验及媒体资源代理、缓存 |
-| `src-tauri/src/ios_layout.rs`、`macos_titlebar.rs`、`linux_http.rs` | 平台专用适配 |
-| `src-tauri/tauri*.conf.json`、`.github/workflows/`、`scripts/` | 平台打包配置、CI 和构建/验证脚本 |
+| `src/App.tsx`、`src/pages/`、`src/components/` | 桌面与移动界面、播放器、设置、线路与代理入口 |
+| `src/store.tsx`、`src/storage.ts` | 个人记录、播放偏好、主题、版本间存储迁移 |
+| `src/api.ts`、`src-tauri/src/api.rs` | Tauri IPC 和业务接口 |
+| `src/autoLine.ts`、`src-tauri/src/lines.rs` | 发布页镜像解析、自动探测、线路切换与取消 |
+| `src-tauri/src/net.rs`、`proxy.rs`、`apple_proxy.rs` | 网络、应用代理与 Apple 系统代理判断 |
+| `src-tauri/src/network_policy.rs`、`media.rs` | 网络安全策略、NAT64 兼容、媒体代理与缓存 |
+| `src-tauri/src/source_migration.rs` | 1.3.0 接入地址迁移 |
+| `src/components/Player.tsx`、`VideoSurface.tsx`、`src/useProxyPlaybackRecovery.ts` | HLS / 原生播放、代理变化后的续播恢复 |
+| `src-tauri/src/ios_layout.rs`、`macos_titlebar.rs`、`linux_http.rs`、`linux_webview.rs` | 平台适配 |
+| `src-tauri/tauri*.conf.json`、`.github/workflows/`、`scripts/` | 打包配置、CI 和验证脚本 |
 
-业务数据应沿“页面 → data_call → service → adapter”传递。新增上游兼容逻辑优先放在适配器和 mapper，不要让页面直接拼网络接口或绕过 Rust 网络策略。壳层能力继续通过 `src/platform.ts` 调用。
+业务接口与播放器使用上游结构。原 fork 的 `data_call/services/edge_v1`、`src/player/`、`SourceGate` 已随本次同步移除；后续改动基于当前文件，不能沿用旧路径。
 
 ## 接入地址与账号：当前真实行为
 
-- 1.3.0 不再内置默认站点，也没有自动发现新域名、自动选线的完整实现。历史提交 `a641050` 引入用户填写接入地址的流程，`9abcb54` 清理旧选线界面及调用。
-- 初次启动只读取本机配置；未配置时显示 `SourceGate`，不发业务请求。桌面端、iOS 和 Android 共用这套流程。
-- 地址保存到应用数据目录的 `source.json`。输入只做去除首尾空白、补协议和末尾斜杠，不检查站点可用性；“已激活”仅表示已保存配置。
-- 当前适配器固定为 `edge_v1`。能保存任意非空输入，不代表可以接入任意视频网站。
-- 旧地址失效后不会自动清除配置或重新弹出填写页。用户需进入“设置 → 网络 → 接入地址”修改；点击“清除接入地址”才会返回首次填写页。
-- 更换到不同地址时会清除登录会话；各设备分别保存自己的地址，不会自动同步。
-- 播放请求本身没有强制登录检查；评论、点赞、关注等操作需要账号。实际访问权限仍由接入站点决定。
-- 登录弹窗仍有“固定线路/镜像线路”的旧文案，不应据此认定当前版本还有自动线路管理。
-- 不把历史域名重新写成默认值，也不将历史链接描述为已确认可用的现行官网。
+- 使用上游内置默认线路、可信发布页镜像、自动选线、手动选线、自定义 HTTPS 镜像及应用代理设置。
+- 自动选线默认开启，受保存的开关控制；启动、网络变化和连续失败触发选线或体检，全部失败时保持原线路。发布页不可用不代表能自动找出任何新域名。
+- 手动保存线路/镜像会关闭自动选线，用户可在“设置 → 网络”重新打开；手机与桌面共用逻辑，各设备独立保存配置。
+- 自定义镜像只接受 HTTPS 根地址，不允许路径、查询参数或凭据，并继续执行网络安全检查。
+- `line.json` 保存当前线路，`proxy.json` 保存应用代理配置；代理支持跟随系统、自定义和直连。
+- 自动切线与手动选择/取消有代次保护，旧探测结果不能覆盖新的手动选择。
+- 会话按 origin 隔离；跨站点切换可能需要重新登录。迁移地址不转移其他 origin 的 token。
+- 播放接口本地不强制登录；评论、点赞等操作需要账号，最终访问权限由站点决定。
+- 默认域名和发布页跟随上游实现；代码中的地址不能描述为已确认当前可访问的官网。
+
+## 数据迁移与网络兼容
+
+- 当前 App 标识仍为 `com.hghubx.app`，覆盖 1.3.0 时保留同一 WebView 存储；不要先卸载或清理应用数据。
+- `src/storage.ts` 读取 fork 的 `app_data_v1:default:library`、上游的 `hghubx_app_v1`，兼容旧 `hghub_app_v1`。
+- 收藏/点赞/关注/搜索记录合并去重；同一视频的观看记录取较新的 `at`，保留集数、秒数和总时长；时间相同优先 fork，旧数字 ID 记录不能覆盖有时间的进度。
+- `hghubx_library_backup_v2` 保存迁移前原始值，旧 library 键保留。迁移标记 `_libraryMigration: 2` 与合并数据一次写入；之后清空历史或取消收藏不能被旧数据恢复。
+- 备份或目标写入失败时，原值不覆盖；当次可读取内存中的合并结果，后续启动重试。用 `pnpm test:storage-migration` 覆盖失败、重启、重复记录及格式损坏场景。
+- 原 `source.json` 仅在 `line.json` 不存在时导入，保留原文件。无效地址不放宽上游安全要求；错误信息不包含原始地址或凭据。
+- 保留 fork 对 `64:ff9b::/96` NAT64 的处理：按内嵌 IPv4 判断，允许公共地址，仍拒绝内网/回环。与上游代理路由、IPv6 优先及 SSRF 策略共同工作。
+- 不自动迁移旧 `com.hghub.huangguo` 应用容器；不同 Bundle ID 的数据不能当作同一存储。不得从旧容器批量复制账号凭据。
 
 ## 平台与安装包
 
-README 的“三端”描述落后于实际配置，平台范围应核对工作流和各平台配置文件。
+平台范围以工作流与各平台配置为准；2.0.0 发布说明列出以下五个平台。
 
 | 平台 | 当前打包方式 | 约束 |
 | --- | --- | --- |
@@ -159,9 +170,9 @@ rustup could not choose a version of cargo to run ... no default is configured
 ## 播放问题排查
 
 1. 先确认用户实际打开的 App 路径、Bundle ID 和版本。本轮 Mac 排查发现本机已安装旧版 1.2.0，其已知接口问题与用户报告相符；未取得此次播放响应，不能断言它是唯一原因。此前构建 iOS 并不会更新本机 Mac App。
-2. “暂无播放地址”来自 `Feed.tsx` 调用 `toPlaybackSource` 后没有取得主播放源，发生在媒体解码之前。不要仅凭这个提示归因于 macOS 解码器、HEVC、缺少登录或安装包签名。
-3. 历史提交 `cfcde4a` 修复上游播放协议变化：旧请求仍可能返回成功，但旧地址字段为空；后续提交 `d46fe31` 增加回退和字段归一化。当前适配器和 `src/player/session.ts` 兼容 `streams.main` 与 `video_url`，高清字段也有新旧映射。
-4. 区分“HTTP 请求成功”“业务成功”“响应映射后存在播放源”“媒体实际播放成功”。当前 mapper 不保留所有原始状态/消息，前端日志里的 `status=?` 不能直接当作上游没有错误的证据；必要时在网络/适配层增加脱敏诊断。
+2. “暂无播放地址”来自 `src/components/Feed.tsx` 没有取得主播放源，发生在媒体解码之前。不要仅凭这个提示归因于 macOS 解码器、HEVC、缺少登录或安装包签名。
+3. 历史提交 `cfcde4a` 修复上游播放协议变化：旧请求仍可能返回成功，但旧地址字段为空；后续提交 `d46fe31` 增加回退和字段归一化。当前 `src-tauri/src/api.rs` 的 `api_play` / 字段归一化逻辑及播放页兼容 `streams.main` 与 `video_url`，高清字段也有新旧映射。
+4. 区分“HTTP 请求成功”“业务成功”“响应映射后存在播放源”“媒体实际播放成功”。前端日志里的 `status=?` 不能直接当作上游没有错误的证据；必要时在 Rust API/网络层增加脱敏诊断。
 5. 本轮旧版日志另有分类请求的 `HTTP 410 Gone` / “内容已下线”，这只能证明该请求返回了下线信息，不能用来断定所有视频或整个站点失效。
 6. 内容是否可播放还取决于当前接入地址及上游接口；历史修复和成功打包都不能证明站点当前可用。
 
@@ -183,6 +194,8 @@ macOS 当前默认数据目录是 `~/Library/Application Support/com.hghubx.app/
 | 频道分页 | `pnpm test:channel-pagination` |
 | 移动导航和布局 | `pnpm test:mobile-layout` |
 | 诊断报告复制 | `pnpm test:diagnostic-copy` |
+| 存储与旧接入迁移 | `pnpm test:storage-migration`、`cargo test --lib source_migration` |
+| 动态选线与代理 | `pnpm test:line-selection`、`pnpm test:network-settings` |
 | Rust 业务、网络或原生层 | 按需运行 `cargo check --all-targets`、`cargo test --lib` 及对应平台构建 |
 | 纯文档 | 核对路径、命令和事实，运行 `git diff --check` |
 
@@ -190,7 +203,7 @@ macOS 当前默认数据目录是 `~/Library/Application Support/com.hghubx.app/
 播放 fixture 默认通过 ffmpeg 生成本地测试媒体，也可使用脚本的 `--media-dir` 参数。测试产物写入 `test-results/`。
 模拟 Tauri IPC 的 Chromium 测试不能代替 iOS/macOS WKWebView、原生媒体协议和真实设备验证。
 
-## 2026-11-14 已验证的本地构建记录
+## 2026-11-14 的 1.3.0 历史构建记录
 
 - 环境：Xcode 27.2（27B52）、Node 22.23.5、pnpm 11.25.0、Rust 1.100.0；这些是本次记录，不是项目新增最低版本要求。
 - 前端类型检查及 Vite 生产构建通过。
@@ -206,6 +219,18 @@ macOS 当前默认数据目录是 `~/Library/Application Support/com.hghubx.app/
 - `AGENTS.md` 是共享项目文档，应纳入 Git；`*.local`、`src-tauri/gen/`、`src-tauri/target/`、依赖和测试产物继续保持忽略。
 - 不提交个人绝对路径、开发团队身份、设备标识、描述文件、签名证书或私钥。构建产物交付用户或通过发布流程管理。
 - 更新版本时使用 `scripts/set-version.mjs`，核对前端、Tauri、Cargo 和 Android versionCode 的一致性。
-- 提交和推送以用户授权的范围及 `git remote -v` 为准。本轮远端为 `michaelxiao0304/hghubx`；代码中的项目链接和更新检查仍指向 `zxsos/HGhubX`，两者不是同一个发布目标。以后调整 fork 的更新渠道时同时核对 `src/branding.ts` 与 `src-tauri/src/api.rs`。
+- 提交和推送以用户授权的范围及 `git remote -v` 为准。本轮远端为 `michaelxiao0304/hghubx`；代码中的项目链接和更新检查仍指向 `zxsos/HGhubX`，两者不是同一个发布目标。以后调整 fork 的更新渠道时同时核对前端项目链接与 `src-tauri/src/api.rs`。
 - 推送前同步并确认分支关系，正常推送，不强推。本地打包不需要创建版本标签；推送 `v*` 标签会触发发布流程。
 - 交付说明应写明文件位置、版本、架构、签名/公证状态、实际验证范围及重要安装差异。
+
+## 2.0.0 合并与本机构建注意事项
+
+- 上游合并点为 `bebfb7a`；保留 NAT64、本文档及 1.3.0 文档归档，并添加数据迁移回归。
+- pnpm 11 默认在运行脚本前自动检查并安装依赖；本次依赖版本/锁文件不变时，该检查仍尝试下载其他平台的可选包。在已确认安装完整后，可仅在本地环境设置 `pnpm_config_verify_deps_before_run=false` 复用依赖，避免反复安装；不要据此跳过缺失依赖。
+- Universal 构建需要同时安装 Rust 的 `aarch64-apple-darwin`、`x86_64-apple-darwin` target，执行 `pnpm tauri build --target universal-apple-darwin`，交付时必须用 `lipo -archs` 验证两种架构。
+- iOS 图标沿用上游生成/同步脚本；现有生成工程仍需保留本机 Xcode Rust 环境包装。
+- 具体迁移策略及本次验证结果见 `docs/release-notes/v2.0.0-fork-sync.md`。
+- 本次 Universal App 编译、ad-hoc 签名通过；Tauri `bundle_dmg.sh` 在本机退出失败。使用 `ditto` 复制 App 到独立 staging 目录、添加指向 `/Applications` 的链接，再用 `hdiutil create -srcfolder <staging> -volname HGhubX -fs HFS+ -format UDZO <output.dmg>` 封装。最终映像和只读挂载后的双架构 App 均已验证；上游 CI 构建流程保持不变。
+- iOS 2.0.0 已通过现有账号开发签名导出及 IPA、描述文件、设备匹配校验。复用生成工程时同步 Info.plist 和 project.yml 的版本，保持本机 Rust 环境包装，勿交付旧导出目录里残留的 1.3.0 IPA。
+- 本次 Rust 79 项单元测试通过、4 项联网测试跳过；前端构建、迁移、网络、UI 和播放 fixture 通过。触控延迟断言在并行编译时曾失败，独立复测原阈值通过；不要为消除这类负载波动放宽生产行为或直接删断言。
+- 本机缺少 FFmpeg，播放测试通过忽略目录中的独立 FFmpeg 工具生成本地 HLS；设置 `FFMPEG_PATH` 指向工具后执行测试，无需修改全局系统环境。

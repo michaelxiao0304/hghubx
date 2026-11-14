@@ -1,12 +1,14 @@
-mod adapters;
 mod api;
-mod commands;
-mod domain;
+#[cfg(any(target_os = "macos", target_os = "ios", test))]
+mod apple_proxy;
+mod env;
 #[cfg(target_os = "ios")]
 mod ios_layout;
-mod infra;
+mod lines;
 #[cfg(target_os = "linux")]
 mod linux_http;
+#[cfg(target_os = "linux")]
+mod linux_webview;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos_titlebar;
@@ -15,9 +17,10 @@ mod media_dns;
 mod net;
 mod network_policy;
 mod playback_log;
-mod ports;
-mod services;
+mod proxy;
+mod search_hot;
 mod session;
+mod source_migration;
 
 use api::Api;
 use tauri::Manager;
@@ -87,9 +90,8 @@ pub fn run() {
         .setup(|app| {
             if let Ok(dir) = app.path().app_data_dir() {
                 let _ = std::fs::create_dir_all(&dir);
-                // 上次激活的门牌（设置 → 数据源）在启动时恢复
-                network_policy::bind_security(&dir);
-                infra::source::bind(&dir);
+                // 上次选择的线路（设置 → 线路）在启动时恢复
+                net::bind_base(&dir);
                 playback_log::bind(&dir);
                 let state: tauri::State<Api> = app.state();
                 state.session.bind(dir);
@@ -105,6 +107,12 @@ pub fn run() {
         })
         .plugin(
             tauri::plugin::Builder::<_, ()>::new("navigation-guard")
+                .on_webview_ready(|webview| {
+                    #[cfg(target_os = "linux")]
+                    linux_webview::configure(&webview);
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = webview;
+                })
                 .on_navigation(|_webview, url| {
                     let host = url.host_str().unwrap_or("");
                     (url.scheme() == "tauri" && host == "localhost")
@@ -184,10 +192,19 @@ pub fn run() {
             api::security_set,
             api::debug_log,
             api::net_diag,
-            commands::data::data_call,
-            commands::source::gate_open,
-            commands::source::gate_state,
-            commands::source::gate_reset,
+            api::line_state,
+            api::line_set,
+            api::line_custom_set,
+            api::line_reset,
+            api::line_cancel,
+            api::line_mirrors,
+            api::line_probe,
+            api::line_auto,
+            api::line_try_main,
+            api::line_health,
+            api::proxy_state,
+            api::proxy_set,
+            api::proxy_test,
             api::check_update,
             api::open_url,
             api::set_orientation,
@@ -197,6 +214,7 @@ pub fn run() {
             api::api_logout,
             api::api_me,
             api::api_feed,
+            api::api_original_videos,
             api::api_topics,
             api::api_topic,
             api::api_tags,

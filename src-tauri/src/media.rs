@@ -586,7 +586,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "联网测试：需要 HGHUBX_TEST_COVER_URL，手动用 --ignored 运行"]
     async fn cover_decrypt_works() {
-        let url = std::env::var("HGHUBX_TEST_COVER_URL")
+        let url = crate::env::var("TEST_COVER_URL")
             .expect("需要设置 HGHUBX_TEST_COVER_URL 为当前有效的封面地址");
         match load_image(&url).await {
             Ok((kind, bytes)) => {

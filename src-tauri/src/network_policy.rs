@@ -38,7 +38,7 @@ where
 pub fn cli_strict_override() -> Option<bool> {
     parse_strict_override(
         std::env::args(),
-        std::env::var("HGHUBX_STRICT").ok().as_deref(),
+        crate::env::var("STRICT").as_deref(),
     )
 }
 

@@ -97,16 +97,15 @@ export const CAT_ICONS: Record<string, ReturnType<typeof S>> = {
 };
 
 export function Logo({ size = 28, className = "" }: { size?: number; className?: string }) {
-  const gid = React.useId().replace(/:/g, "");
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" className={className} aria-hidden>
       <defs>
-        <linearGradient id={gid} x1="4" y1="0" x2="60" y2="64" gradientUnits="userSpaceOnUse">
+        <linearGradient id="logo-x-night" x1="4" y1="0" x2="60" y2="64" gradientUnits="userSpaceOnUse">
           <stop stopColor="#06465b" />
           <stop offset="1" stopColor="#002837" />
         </linearGradient>
       </defs>
-      <rect width="64" height="64" rx="17.455" fill={`url(#${gid})`} />
+      <rect width="64" height="64" rx="17.455" fill="url(#logo-x-night)" />
       <rect x=".65" y=".65" width="62.7" height="62.7" rx="16.8" fill="none" stroke="#60cdff" strokeOpacity=".14" strokeWidth=".8" />
       <g transform="translate(-2.909091 -2.909091) scale(1.4545455)">
         <path d="M14 13v22M14 24h10M24 13v22" stroke="#60cdff" strokeWidth="4.4" strokeLinecap="round" fill="none" />

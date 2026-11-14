@@ -1,12 +1,12 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
-import Feed from "../src/pages/Feed";
+import Feed from "../src/components/Feed";
 import { AppProvider } from "../src/store";
 import { api } from "../src/api";
 import "../src/index.css";
-import { flushPlaybackLog, initPlaybackLog, playbackLogApi, setPlaybackLog } from "../src/player/playbackDiagnostics";
+import { flushPlaybackLog, initPlaybackLog, playbackLogApi, setPlaybackLog } from "../src/playbackDiagnostics";
 import Settings from "../src/pages/Settings";
-import Player from "../src/player/Player";
+import Player from "../src/components/Player";
 import Hls from "hls.js";
 
 // 仅将自定义媒体协议映射到本地测试服务器；播放器、HLS 和鼠标事件均使用真实实现。
@@ -21,6 +21,7 @@ XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, 
 };
 
 const fixture = {
+  rejectPlaybackApi: new URLSearchParams(location.search).has("api-failure"),
   seeks: [] as number[], errors: [] as string[],
   setActive: (_active: boolean) => {},
   logs: [] as { event: string; data: Record<string, unknown> }[],
@@ -52,6 +53,7 @@ if (diagnosticTest) {
     await collect?.(entries);
   };
   playbackLogApi.read = async () => fixture.logs.map(e => JSON.stringify(e)).join("\n");
+  api.lineState = async () => ({ base: "https://fixture.invalid", default: "https://fixture.invalid", fixed: [] });
   void initPlaybackLog();
 }
 Object.assign(window, { playerSeekFixture: fixture });
@@ -60,7 +62,10 @@ document.addEventListener("seeking", (e) => {
 }, true);
 window.addEventListener("error", (e) => fixture.errors.push(e.message));
 api.boot = async () => ({ user: null, logged_in: false, base: "https://fixture.invalid", strict_security: true });
-api.play = async () => ({ id: 991, ep_num: 1, title: "Seek fixture", duration: 90, video_url: "https://media.fixture.invalid/list.m3u8" });
+api.play = async () => {
+  if (fixture.rejectPlaybackApi) throw new Error("fixture playback API unavailable");
+  return { id: 991, ep_num: 1, title: "Seek fixture", duration: 90, video_url: "https://media.fixture.invalid/list.m3u8" };
+};
 api.video = async () => ({
   id: 991, title: "Seek fixture", description: "", cover: "", tags: [], score: 0,
   episode_count: 1, total_episodes: 1,

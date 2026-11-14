@@ -152,7 +152,8 @@ export type TagGroup = {
   tags: TagItem[];
 };
 
-export type HotWord = { heat: number; word: string };
+/** 官网搜索页的影片热搜榜；plays 保留上游的播放量单位。 */
+export type HotSearchVideo = { video_id: number; title: string; plays: string };
 
 export type PostCategory = { id: number; name: string; route: string; intro?: string; sort?: number };
 
@@ -185,36 +186,3 @@ export type User = {
     like_video_episodes: { video_id: number; ep: number }[];
   };
 };
-
-/** 门牌 / 数据源状态：Rust `infra::source::GateState` 的镜像。 */
-export type GateState = {
-  base: string;
-  adapter: string;
-  activated: boolean;
-};
-
-/** `app_boot` / `gate_*` 的启动响应。 */
-export type BootInfo = {
-  user: User | null;
-  logged_in: boolean;
-  base: string;
-  gate?: GateState;
-  strict_security?: boolean;
-  cli_relaxed?: boolean;
-};
-
-/** 更新检查：对比 GitHub Release 的 tag。 */
-export type UpdateInfo = {
-  /** 当前平台对应的安装包；没有就是这次 release 没给本平台出包 */
-  asset?: { name: string; url: string } | null;
-  current: string;
-  latest: string;
-  tag?: string;
-  has_update: boolean;
-  url: string;
-  name?: string;
-  published_at?: string;
-  notes?: string;
-};
-
-

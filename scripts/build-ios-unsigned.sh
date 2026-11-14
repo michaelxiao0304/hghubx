@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 照上游 Minireel/HGhub scripts/build-ios-unsigned.sh 重写（9ca6972）。
+# 照上游 Minireel/HGhubX scripts/build-ios-unsigned.sh 重写（9ca6972）。
 # 关键点：不再用 cargo 直出静态库 + -Wl,-undefined,dynamic_lookup，
 # 而是让 tauri ios build 的 options server 活着，由 Xcode 自己跑 Build Rust Code，
 # 并把 Swift 兼容库目录指到 Xcode toolchain 里（Xcode 26 挪了位置）。
@@ -11,6 +11,11 @@ LOG="$ROOT/ios-build-session.log"
 ADDR_FILE="$(node -p "require('os').tmpdir() + '/' + require('./src-tauri/tauri.conf.json').identifier + '-server-addr'")"
 mkdir -p artifacts
 rm -f "$ADDR_FILE"
+
+# init writes Tauri template icons; generate square opaque artwork and replace it
+# before either build starts. The later beforeBuildCommand repeats this idempotently.
+node scripts/generate-ios-icons.mjs
+node scripts/sync-ios-icons.mjs --required
 
 # Tauri 没有 ios --no-sign。让它的 release options server 一直活着，
 # 否则 Xcode 的 Build Rust Code 阶段连不上它会直接 panic。

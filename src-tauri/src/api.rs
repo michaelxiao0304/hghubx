@@ -20,13 +20,17 @@ impl Api {
     /// POST 信封：新播放接口 /api/videos/{id}/episodes/{ep}/playback 需要。
     async fn post(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
         let origin = base();
-        let token = self.session.token(&origin);
+        let token = self.session.token(&origin).filter(|_| {
+            !crate::network_policy::strict_security() || crate::net::trusted_auth_origin(&origin)
+        });
         edge(&origin, "POST", path, body, token.as_deref()).await
     }
 
     async fn get(&self, path: &str) -> Result<Value, String> {
         let origin = base();
-        let token = self.session.token(&origin);
+        let token = self.session.token(&origin).filter(|_| {
+            !crate::network_policy::strict_security() || crate::net::trusted_auth_origin(&origin)
+        });
         edge(&origin, "GET", path, None, token.as_deref()).await
     }
 
@@ -52,6 +56,163 @@ pub async fn debug_log(app: tauri::AppHandle, msg: String) -> Result<(), String>
 #[tauri::command]
 pub async fn net_diag() -> Result<Value, String> {
     Ok(crate::net::diagnose().await)
+}
+
+/* ───────────────────────── 线路（数据源） ───────────────────────── */
+// Network probes run without holding this lock. Manual selection/cancellation
+// invalidates older probes; applying a result is serialized with manual writes.
+static LINE_SELECTION: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+
+fn begin_line_selection() -> Result<u64, String> {
+    let mut generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
+    *generation = generation.wrapping_add(1);
+    Ok(*generation)
+}
+
+#[tauri::command]
+pub async fn line_cancel() -> Result<(), String> {
+    begin_line_selection().map(|_| ())
+}
+
+/// 当前线路 + 固定线路清单（镜像线路另外按需拉取）。
+#[tauri::command]
+pub async fn line_state() -> Result<Value, String> {
+    Ok(json!({
+        "base": base(),
+        "default": crate::net::DEFAULT_BASE,
+        "custom": crate::net::is_custom_line(),
+        "fixed": crate::lines::fixed(),
+    }))
+}
+
+/// 手动切换线路：只允许固定线路或刚从可信发布页读取的镜像。
+#[tauri::command]
+pub async fn line_set(state: State<'_, Api>, url: String) -> Result<String, String> {
+    let mut generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
+    *generation = generation.wrapping_add(1);
+    let previous = base();
+    let applied = crate::net::set_base(&url)?;
+    crate::net::refresh_client();
+    if previous != applied {
+        state.session.clear();
+    }
+    Ok(applied)
+}
+
+#[tauri::command]
+pub async fn line_custom_set(state: State<'_, Api>, url: String) -> Result<Value, String> {
+    let mut generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
+    *generation = generation.wrapping_add(1);
+    let previous = base();
+    let applied = crate::net::set_custom_base(&url)?;
+    crate::net::refresh_client();
+    if previous != applied { state.session.clear(); }
+    Ok(json!({ "base": applied, "custom": crate::net::is_custom_line() }))
+}
+
+#[tauri::command]
+pub async fn line_reset(state: State<'_, Api>) -> Result<Value, String> {
+    let base = line_set(state, crate::net::DEFAULT_BASE.to_string()).await?;
+    Ok(json!({ "base": base, "custom": false }))
+}
+
+#[tauri::command]
+pub async fn proxy_state() -> Result<Value, String> {
+    Ok(crate::net::proxy_state())
+}
+
+#[tauri::command]
+pub async fn proxy_set(mode: String, url: String) -> Result<Value, String> {
+    // Serialize with line application: probes using the previous proxy must
+    // never switch the line after the new proxy has been saved.
+    let mut generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
+    crate::proxy::set(&mode, &url)?;
+    *generation = generation.wrapping_add(1);
+    crate::net::refresh_client();
+    let state = crate::net::proxy_state();
+    crate::playback_log::record("proxy.changed", json!({
+        "mode": state.get("mode"), "proxy": state.get("effective"),
+    }));
+    Ok(state)
+}
+
+#[tauri::command]
+pub async fn proxy_test(mode: String, url: String) -> Result<Value, String> {
+    Ok(crate::net::test_proxy(&mode, &url).await)
+}
+
+/// 从地址发布页抓镜像线路（只在用户点开「线路」时调用）。
+#[tauri::command]
+pub async fn line_mirrors() -> Result<Value, String> {
+    // 用户手动点「刷新 / 打开线路」时重新读一次系统代理：代理软件开关过之后旧客户端会卡死
+    crate::net::refresh_client();
+    crate::lines::mirrors().await
+}
+
+/// 可达性探测：只报结果，不做自动检查 / 自动切换。
+#[tauri::command]
+pub async fn line_probe(urls: Vec<String>) -> Result<Value, String> {
+    crate::net::refresh_client();
+    Ok(crate::lines::probe(urls).await)
+}
+
+/// 自动选线：探测主站与可信发布页镜像，全部失败时保持当前线路。
+///
+/// 保留按 origin 隔离的会话，不会把旧站点 token 发送给新站点。
+#[tauri::command]
+pub async fn line_auto() -> Result<Value, String> {
+    let selection = begin_line_selection()?;
+    crate::net::refresh_client();
+    let pick = crate::lines::auto_pick().await;
+    let chosen = pick
+        .get("base")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut switched = false;
+    let generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
+    let previous = base();
+    if *generation == selection
+        && pick.get("reason").and_then(Value::as_str) != Some("all-down")
+        && !chosen.is_empty() && chosen != previous {
+        let next = crate::net::set_base(&chosen)?;
+        switched = next != previous;
+    }
+    Ok(json!({
+        "previous": previous,
+        "base": crate::net::base(),
+        "switched": switched,
+        "cancelled": *generation != selection,
+        "pick": pick,
+    }))
+}
+
+/// 当前走的是镜像时，敲一次主站：通了就切回（不清会话）。
+///
+/// 和 [`line_auto`] 的分工：[`line_auto`] 是「整体比一次」，要抓发布页；
+/// 这个只问一句「主站现在通不通」，代价一个请求，可以频繁调用。
+#[tauri::command]
+pub async fn line_try_main() -> Result<Value, String> {
+    let selection = begin_line_selection()?;
+    crate::net::refresh_client();
+    let probe = crate::lines::try_main().await;
+    let mut switched = false;
+    let generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
+    let previous = base();
+    if *generation == selection && probe.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        let chosen = probe.get("base").and_then(Value::as_str).unwrap_or_default();
+        if !chosen.is_empty() && chosen != previous {
+            let next = crate::net::set_base(chosen)?;
+            switched = next != previous;
+        }
+    }
+    Ok(json!({
+        "previous": previous,
+        "base": crate::net::base(),
+        "switched": switched,
+        "probe": probe,
+        "cancelled": *generation != selection,
+    }))
 }
 
 /* ───────────────────────── 更新检查 ───────────────────────── */
@@ -80,6 +241,9 @@ fn is_newer(latest: &str, current: &str) -> bool {
 }
 
 /// 从 tag / name 里取出 `x.y.z`。
+///
+/// 我们的 tag 是 `hgfix-1.2.1-r5`，上游是 `v1.2.0`，release name 是 `HGhubX 1.2.1+hg.1`。
+/// 直接拿去比会从第一位就判负（`hgfix-1` 解析成 0），所以先抠出版本号。
 fn version_in(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
@@ -105,6 +269,11 @@ fn version_in(text: &str) -> String {
     String::new()
 }
 
+/// 线路体检：探一次 `/api/videos`，和自动选线用同一个判据。
+#[tauri::command]
+pub async fn line_health() -> Result<Value, String> {
+    Ok(crate::lines::health().await)
+}
 /// 对比 GitHub Release 的 tag 与当前版本（未认证 60 次/小时/IP，够用）。
 #[tauri::command]
 pub async fn check_update() -> Result<Value, String> {
@@ -357,11 +526,19 @@ fn request_ios_orientation(landscape: bool) {
 #[tauri::command]
 pub async fn app_boot(state: State<'_, Api>) -> Result<Value, String> {
     let origin = base();
+    if crate::network_policy::strict_security()
+        && state.session.token(&origin).is_some()
+        && !crate::net::trusted_auth_origin(&origin)
+    {
+        let _ = crate::lines::verify_published_origin(&origin).await;
+    }
+    let origin = base();
+    let credentials_allowed = !crate::network_policy::strict_security()
+        || crate::net::trusted_auth_origin(&origin);
     Ok(json!({
-        "user": state.session.user(&origin),
-        "logged_in": state.session.token(&origin).is_some(),
+        "user": if credentials_allowed { state.session.user(&origin) } else { Value::Null },
+        "logged_in": credentials_allowed && state.session.token(&origin).is_some(),
         "base": origin,
-        "gate": crate::infra::source::gate_state(),
         "strict_security": crate::network_policy::strict_security(),
         "cli_relaxed": crate::network_policy::cli_strict_override() == Some(false),
     }))
@@ -483,6 +660,29 @@ pub async fn api_feed(state: State<'_, Api>, page: u32, size: u32) -> Result<Val
         .await
 }
 
+/// 原创频道，返回分页视频卡（结构同 api_feed）。
+/// `cate="all"` 走 `/api/videos?is_original=1`；`ai-duanju`/`ai-manju` 走
+/// `/api/videos/category/{cate}?is_original=1`。
+#[tauri::command]
+pub async fn api_original_videos(
+    state: State<'_, Api>,
+    cate: String,
+    page: u32,
+    size: u32,
+    sort: Option<String>,
+) -> Result<Value, String> {
+    let sort = match sort.as_deref() {
+        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
+        _ => String::new(),
+    };
+    let path = if cate == "all" {
+        format!("/api/videos?is_original=1&page={page}&size={size}{sort}")
+    } else {
+        format!("/api/videos/category/{cate}?is_original=1&page={page}&size={size}{sort}")
+    };
+    state.get(&path).await
+}
+
 /* ───────────────────────── 专题 / 标签 ───────────────────────── */
 
 /// 专题列表：`/api/topics` 返回 data.items（标题/封面/简介/收录数）。
@@ -524,10 +724,15 @@ pub async fn api_category(
     cate: String,
     page: u32,
     size: u32,
+    sort: Option<String>,
 ) -> Result<Value, String> {
+    let sort = match sort.as_deref() {
+        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
+        _ => String::new(),
+    };
     state
         .get(&format!(
-            "/api/videos/category/{cate}?page={page}&size={size}"
+            "/api/videos/category/{cate}?page={page}&size={size}{sort}"
         ))
         .await
 }
@@ -564,16 +769,25 @@ pub async fn api_search(
         .await
 }
 
-/// 热搜榜：`/api/search/hot` 返回 data.items（word/heat）。
+/// 热搜榜：解析官网搜索页服务端渲染的热搜影片列表。
 #[tauri::command]
-pub async fn api_search_hot(state: State<'_, Api>) -> Result<Value, String> {
-    state.get("/api/search/hot").await
+pub async fn api_search_hot(_state: State<'_, Api>) -> Result<Value, String> {
+    crate::search_hot::fetch().await
 }
 
 #[tauri::command]
-pub async fn api_posts(state: State<'_, Api>, page: u32, size: u32) -> Result<Value, String> {
+pub async fn api_posts(
+    state: State<'_, Api>,
+    page: u32,
+    size: u32,
+    sort: Option<String>,
+) -> Result<Value, String> {
+    let sort = match sort.as_deref() {
+        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
+        _ => String::new(),
+    };
     state
-        .get(&format!("/api/posts?page={page}&size={size}"))
+        .get(&format!("/api/posts?page={page}&size={size}{sort}"))
         .await
 }
 
@@ -768,17 +982,24 @@ pub async fn api_post_categories(state: State<'_, Api>) -> Result<Value, String>
     state.get("/api/site/categories/post").await
 }
 
-/// 按分类取吃瓜帖：`/api/posts/category/{route}`。
+/// 按分类取吃瓜帖：`/api/posts/category/{route}`；`sort=latest` 走最新排序。
 #[tauri::command]
 pub async fn api_post_category(
     state: State<'_, Api>,
     route: String,
     page: u32,
     size: u32,
+    sort: Option<String>,
 ) -> Result<Value, String> {
     let encoded: String = url::form_urlencoded::byte_serialize(route.as_bytes()).collect();
+    let sort = match sort.as_deref() {
+        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
+        _ => String::new(),
+    };
     state
-        .get(&format!("/api/posts/category/{encoded}?page={page}&size={size}"))
+        .get(&format!(
+            "/api/posts/category/{encoded}?page={page}&size={size}{sort}"
+        ))
         .await
 }
 
