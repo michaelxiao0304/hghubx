@@ -8,6 +8,7 @@ import { runBack } from "./back";
 import Home from "./pages/Home";
 import Feed from "./components/Feed";
 import LoginModal from "./components/LoginModal";
+import SessionNotice from "./components/SessionNotice";
 import { ToastHost } from "./components/ui";
 import { DesktopRail, DesktopTitleBar } from "./components/DesktopChrome";
 import ResizeHandles from "./components/ResizeHandles";
@@ -332,6 +333,7 @@ export default function App() {
   return (
     <>
       {isMobile ? <MobileShell /> : <DesktopShell />}
+      <SessionNotice />
       <LoginModal />
       <ToastHost />
     </>

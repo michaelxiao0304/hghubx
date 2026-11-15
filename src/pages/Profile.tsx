@@ -18,7 +18,7 @@ export default function Profile({ wide }: { wide: boolean }) {
 
 function ProfileContent({ wide }: { wide: boolean }) {
   const { blockReason } = useContentPreferences();
-  const { user, setLoginOpen, logout, history, favs, clearHistory, push, accountSync, syncAccount } = useStore();
+  const { user, authExpired, setLoginOpen, logout, history, favs, clearHistory, push, accountSync, syncAccount } = useStore();
   const [tab, setTab] = useState<"fav" | "history">("fav");
   const [cache, setCache] = useState<Record<number, Detail>>({});
   const cacheRef = useRef(cache);
@@ -121,6 +121,7 @@ function ProfileContent({ wide }: { wide: boolean }) {
             <Avatar size={56} name={user.nickname} hue={280} ring />
             <div className="flex-1 min-w-0">
               <div className="text-[16px] font-bold text-on truncate">{user.nickname}</div>
+              {authExpired && <p className="mt-1 text-[12px] text-danger">登录已失效 · 当前显示本机缓存</p>}
               <div className="text-[12px] text-mut mt-0.5">@{user.username} · ID {user.id}</div>
               <div className="flex gap-3 mt-2 text-[12px] text-mut">
                 <span>点赞 <b className="text-on">{fmt(user.counts?.like)}</b></span>
@@ -151,10 +152,10 @@ function ProfileContent({ wide }: { wide: boolean }) {
           </Button>
         )}
 
-        {user && accountSync.error && <div role="alert" className="mt-3 rounded-(--r-sm) bg-s3 p-3 text-[13px]">
+        {user && accountSync.error && <div role={authExpired ? undefined : "alert"} className="mt-3 rounded-(--r-sm) bg-s3 p-3 text-[13px]">
           <p className="text-danger break-words">{accountSync.error}</p>
-          <Button disabled={accountSync.busy} onClick={() => { void syncAccount().catch(() => {}); }}
-            className="mt-1 min-h-11 px-3 text-on">{accountSync.busy ? "正在重试…" : "重试同步"}</Button>
+          <Button disabled={accountSync.busy} onClick={() => { if (authExpired) setLoginOpen(true); else void syncAccount().catch(() => {}); }}
+            className="mt-1 min-h-11 px-3 text-on">{authExpired ? "重新登录" : accountSync.busy ? "正在重试…" : "重试同步"}</Button>
         </div>}
 
         {/* 关注 / 我的主页 */}
@@ -177,8 +178,8 @@ function ProfileContent({ wide }: { wide: boolean }) {
         <div className="mt-3" aria-busy={loading || syncingFavorites}>
           {favoriteSyncFailed ? (
             <Empty icon={<IStar size={24} />} title="收藏状态未知"
-              sub="账号同步未完成，暂时无法确认收藏内容。" action="重试"
-              onAction={() => { void syncAccount().catch(() => {}); }} />
+              sub="账号同步未完成，暂时无法确认收藏内容。" action={authExpired ? "重新登录" : "重试"}
+              onAction={() => { if (authExpired) setLoginOpen(true); else void syncAccount().catch(() => {}); }} />
           ) : syncingFavorites ? (
             <FavoriteSyncState wide={wide} />
           ) : loading && !cards.length ? (

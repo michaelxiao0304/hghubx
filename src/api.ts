@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tracePlayback } from "./playbackDiagnostics";
+import { AUTH_EXPIRED_MESSAGE, captureAuthFailure, httpErrorStatus } from "./authFailure";
 import type {
   AccountHistoryPage, AccountIdentity, AccountSnapshot, CommentPage, Detail, HotSearchVideo, Paged, PlayInfo, Post, PostCategory, RankItem, TagGroup, TopicCard, TopicDetail, User, UserProfile, VideoCard,
 } from "./types";
@@ -70,12 +71,16 @@ export const setNetObserver = (fn: NetObserver | null) => { netObserver = fn; };
 const notifyNet = (r: Parameters<NetObserver>[0]) => {
   try { netObserver?.(r); } catch { /* 观察者不能影响请求本身 */ }
 };
-const failMessage = (msg: string, status?: string) =>
-  status
+const failMessage = (msg: string, status?: string, command?: string) =>
+  status === "401" ? (command === "api_login" || command === "api_register"
+    ? "登录验证未通过，请检查账号和密码后重试" : AUTH_EXPIRED_MESSAGE)
+  : status === "403" ? "服务器拒绝访问（HTTP 403），请确认当前账号是否有访问权限"
+  : status
     ? `服务器请求失败（HTTP ${status}），请稍后重试或在设置中切换线路`
     : msg.length > 140 ? `${msg.slice(0, 140)}…` : msg;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const onUnauthorized = captureAuthFailure(cmd, args);
   const once = () => invoke(cmd, args) as Promise<T>;
   try {
     const r = await once();
@@ -83,7 +88,8 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     return r;
   } catch (e) {
     const msg = typeof e === "string" ? e : "请求失败，请检查网络";
-    const status = /^HTTP (\d{3})\b/.exec(msg)?.[1];
+    const status = httpErrorStatus(msg);
+    const staleAuth = status === "401" && onUnauthorized?.() === false;
     const networkish = !status && NET_FAIL.test(msg);
     // 落盘完整错误链（dns error / connection refused / 证书错误…），toast 只显示截断版
     logLine(`[api] ${cmd} → ${msg}`);
@@ -102,13 +108,14 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         return r;
       } catch (e2) {
         const again = typeof e2 === "string" ? e2 : msg;
-        const againStatus = /^HTTP (\d{3})\b/.exec(again)?.[1];
+        const againStatus = httpErrorStatus(again);
+        const staleRetryAuth = againStatus === "401" && onUnauthorized?.() === false;
         logLine(`[api] ${cmd} 重试仍失败 → ${again}`);
         tracePlayback("api.retry_failed", { cmd, err: again, status: againStatus ?? null });
-        throw new Error(failMessage(again, againStatus));
+        throw new Error(staleRetryAuth ? "账号或线路已变化，请重试" : failMessage(again, againStatus, cmd));
       }
     }
-    throw new Error(failMessage(msg, status));
+    throw new Error(staleAuth ? "账号或线路已变化，请重试" : failMessage(msg, status, cmd));
   }
 }
 
@@ -173,8 +180,8 @@ export const api = {
 
   clearCache: () => invoke<{ webCache: boolean; platform: string }>("cache_clear"),
   netDiag: () => invoke<Record<string, unknown>>("net_diag"),
-  postLike: (id: number, on: boolean, identity?: AccountIdentity) => invoke<unknown>("api_post_like", { id, on, expectedUserId: identity?.expectedUserId, expectedOrigin: identity?.expectedOrigin }),
-  postCollect: (id: number, on: boolean, identity?: AccountIdentity) => invoke<unknown>("api_post_collect", { id, on, expectedUserId: identity?.expectedUserId, expectedOrigin: identity?.expectedOrigin }),
+  postLike: (id: number, on: boolean, identity?: AccountIdentity) => call<unknown>("api_post_like", { id, on, expectedUserId: identity?.expectedUserId, expectedOrigin: identity?.expectedOrigin }),
+  postCollect: (id: number, on: boolean, identity?: AccountIdentity) => call<unknown>("api_post_collect", { id, on, expectedUserId: identity?.expectedUserId, expectedOrigin: identity?.expectedOrigin }),
   postComments: (id: number, page: number, size: number) => call<CommentPage>("api_post_comments", { id, page, size }),
   postCategories: () => call<{ items: PostCategory[] }>("api_post_categories"),
   postCategory: (route: string, page = 1, size = 20, sort?: string) =>

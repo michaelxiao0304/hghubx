@@ -159,7 +159,7 @@ type Store = {
   theme: Theme; themePreference: ThemePreference; setTheme: (t: ThemePreference) => void;
   tab: Tab; setTab: (t: Tab) => void;
   stack: Page[]; push: (p: PageInput) => void; pop: () => void;
-  user: User | null; setUser: (u: User | null, origin?: string) => void;
+  user: User | null; authExpired: boolean; setUser: (u: User | null, origin?: string) => void;
   accountScope: string; accountSync: { busy: boolean; error: string; lastSynced: number; favoritesKnown: boolean };
   syncAccount: () => Promise<void>;
   setCollected: (kind: "video" | "post", id: number, on: boolean) => Promise<void>;
@@ -399,7 +399,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     platform: envPlatform,
     theme, themePreference, setTheme,
     tab, setTab, stack, push, pop,
-    user, setUser, loginOpen, setLoginOpen, logout,
+    user, authExpired: account.authExpired, setUser, loginOpen, setLoginOpen, logout,
     accountScope: account.accountScope, accountSync: account.accountSync, syncAccount: account.syncAccount,
     likes: account.likes, favs: account.favs, history: account.history, follows: account.follows,
     isLiked: account.isLiked, isFav: account.isFav,

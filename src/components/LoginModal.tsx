@@ -8,7 +8,7 @@ import { Loader } from "./ios/effects";
 import { IClose, IEye, IEyeOff, ILogin } from "../icons";
 
 export default function LoginModal() {
-  const { loginOpen, setLoginOpen, setUser, toast, accountScope, lineEpoch } = useStore();
+  const { loginOpen, setLoginOpen, setUser, toast, accountScope, lineEpoch, authExpired } = useStore();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -37,7 +37,8 @@ export default function LoginModal() {
   useEffect(() => {
     if (!loginOpen) { setPassword(""); setShowPassword(false); setErr(""); }
   }, [loginOpen]);
-  const title = mode === "login" ? "登录 HGhubX" : "注册 HGhubX";
+  useEffect(() => { if (loginOpen && authExpired) setMode("login"); }, [loginOpen, authExpired]);
+  const title = mode === "login" ? (authExpired ? "重新登录 HGhubX" : "登录 HGhubX") : "注册 HGhubX";
   const close = () => {
     if (pending.current) return;
     setLoginOpen(false);
@@ -66,7 +67,7 @@ export default function LoginModal() {
     <div className="ios-dialog-heading"><span className="ios-heading-icon"><ILogin size={21} /></span><h2>{title}</h2>
       <Button className="ios-icon-button" aria-label="关闭登录" onClick={close} disabled={busy}><IClose size={19} /></Button>
     </div>
-    <p className="ios-description">登录后同步账号收藏、关注和观看记录；游客的本机记录单独保留。</p>
+    <p className="ios-description">{authExpired ? "登录已失效，收藏和观看记录已保留。请重新登录后继续同步。" : "登录后同步账号收藏、关注和观看记录；游客的本机记录单独保留。"}</p>
     <SegmentedControl className="ios-auth-tabs" aria-label="账号操作" activeIndex={mode === "login" ? 0 : 1}>
       {([ ["login", "登录"], ["register", "注册"] ] as const).map(([key, label]) => <Button key={key}
         disabled={busy} aria-pressed={mode === key} onClick={() => { if (!pending.current) { setMode(key); setErr(""); setShowPassword(false); } }}>{label}</Button>)}

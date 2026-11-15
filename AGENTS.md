@@ -1,7 +1,8 @@
 # HGhubX 迭代与构建指南
 
 本文件适用于整个仓库。用中文沟通，先确认实际运行的版本和代码状态，再修改或打包。
-当前以 `zxsos/HGhubX` 提交 `1620817` 为实现基线，包含 `bebfb7a` 后的 9 个提交，代码版本为 2.1.0。上游虽有 2.1.1 发布说明，但 package/Tauri/Cargo 仍为 2.1.0，不凭文档名修改版本。按用户决定，界面、数据 API、播放器、动态选线和构建流程跟随上游，保留 fork 的 NAT64 网络兼容、文档及本地数据迁移。
+当前以 `zxsos/HGhubX` 提交 `1620817` 为实现基线，包含 `bebfb7a` 后的 9 个提交，该上游基线代码版本为 2.1.0。其目录虽有 2.1.1 发布说明，但基线的 package/Tauri/Cargo 为 2.1.0，不凭文档名推断代码版本。按用户决定，界面、数据 API、播放器、动态选线和构建流程跟随上游，保留 fork 的 NAT64 网络兼容、文档及本地数据迁移。
+本 fork 随后的登录失效修复版为 **2.1.1**，由 `scripts/set-version.mjs` 同步版本；上游基线仍是 `1620817`，不代表已同步其他上游提交。
 1.3.0 完整迭代与打包记录归档在 [docs/build-history/2026-11-14-v1.3.0.md](docs/build-history/2026-11-14-v1.3.0.md)，不要将旧架构说明当作当前实现。
 
 ## 项目定位与技术结构
@@ -16,6 +17,7 @@
 | `src/App.tsx`、`src/pages/`、`src/components/` | 桌面与移动界面、播放器、设置、线路与代理入口 |
 | `src/store.tsx`、`src/storage.ts` | 个人记录、播放偏好、主题、版本间存储迁移 |
 | `src/accountData.ts` | 游客与账号记录隔离、收藏/历史同步、迟到响应保护 |
+| `src/authFailure.ts`、`src/components/SessionNotice.tsx` | 401 分类、按请求发起时的账号代次处理失效、重新登录提示 |
 | `src/mediaTransport.ts`、`src-tauri/src/ios_media_http.rs` | iOS 原生播放器使用的受保护本机 HTTP 媒体通道 |
 | `src/api.ts`、`src-tauri/src/api.rs` | Tauri IPC 和业务接口 |
 | `src/autoLine.ts`、`src-tauri/src/lines.rs` | 发布页镜像解析、自动探测、线路切换与取消 |
@@ -53,6 +55,8 @@
 - 2.1.0 通过 `pickGuestData` 将片库字段与音量/静音等设置隔离；必须保留 `store.tsx` 的 `writeAppStorage(p)`，以及迁移标记随状态保存的行为。
 - 升级前的本地收藏/历史继续保存在游客片库。登录后显示当前站点/账号的记录，退出登录恢复游客记录；账号缓存使用 `hghubx_accounts_v1`，按 origin 与用户 ID 隔离，不把游客记录自动上传或复制到任意账号。
 - 数据回归需覆盖登录/退出、账号与线路切换、迟到请求、离线缓存、偏好不回滚、重启，以及旧数据备份和迁移标记保留。真实设备数据仅导出到忽略目录作隔离验证，不写进测试 fixture 或 Git。
+- 401 将当前账号标记为登录失效，保留身份以显示本机账号缓存，不调用退出登录、不清除游客/账号片库，也不重放失败的收藏或点赞。暂停自动同步和上传，但继续保存观看进度；成功重新登录后恢复同步。重新启动会再次验证保存的会话。
+- 失效回调在请求发起时捕获账号代次；旧账号、旧线路或同账号重新登录之前的迟到 401 不能使当前会话失效。HTTP 403 必须保留为权限拒绝，不能映射为 401；登录表单的 401 提示验证失败，不能使已有账号失效。
 
 ## 平台与安装包
 
@@ -200,6 +204,7 @@ macOS 当前默认数据目录是 `~/Library/Application Support/com.hghubx.app/
 | 移动导航和布局 | `pnpm test:mobile-layout` |
 | 诊断报告复制 | `pnpm test:diagnostic-copy` |
 | 存储与旧接入迁移 | `pnpm test:storage-migration`、`cargo test --lib source_migration` |
+| 登录失效、重新登录与账号缓存 | `pnpm test:session-expiry`，再运行迁移、账号同步和清空历史回归 |
 | 动态选线与代理 | `pnpm test:line-selection`、`pnpm test:network-settings` |
 | Rust 业务、网络或原生层 | 按需运行 `cargo check --all-targets`、`cargo test --lib` 及对应平台构建 |
 | 纯文档 | 核对路径、命令和事实，运行 `git diff --check` |

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { AUTH_EXPIRED_MESSAGE, observeAuthFailures } from "./authFailure";
 import type { AccountHistoryItem, AccountIdentity, AccountInteractions, User } from "./types";
 import type { WatchProgress } from "./store";
 
@@ -59,7 +60,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const render = () => redraw(n => n + 1);
   const mounted = useRef(true);
   const saveGuestRef = useRef(saveGuest); saveGuestRef.current = saveGuest;
-  const state = useRef<{ user: User | null; origin: string; key: string; generation: number; data: AccountData; sync: SyncState } | null>(null);
+  const state = useRef<{ user: User | null; origin: string; key: string; generation: number; authExpired: boolean; data: AccountData; sync: SyncState } | null>(null);
   const accounts = useRef<Record<string, AccountData>>({});
   const guest = useRef(sanitize(initialGuest));
   if (!state.current) {
@@ -69,7 +70,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
         accounts.current = Object.fromEntries(Object.entries(saved.accounts).map(([key, data]) => [key, sanitize(data as AccountData)]));
       }
     } catch { /* A damaged account cache must not erase legacy guest records. */ }
-    state.current = { user: null, origin: "", key: "guest", generation: 0, data: guest.current, sync: { busy: false, error: "", lastSynced: 0, favoritesKnown: false } };
+    state.current = { user: null, origin: "", key: "guest", generation: 0, authExpired: false, data: guest.current, sync: { busy: false, error: "", lastSynced: 0, favoritesKnown: false } };
   }
   const pending = useRef(new Map<string, Promise<void>>());
   const mutation = useRef(0);
@@ -84,8 +85,30 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const flushTimer = useRef<number | undefined>(undefined);
   const syncTimer = useRef<number | undefined>(undefined);
   const isCurrent = (generation: number) => mounted.current && state.current!.generation === generation;
+  const canSync = (generation: number) => isCurrent(generation) && !state.current!.authExpired;
+  useLayoutEffect(() => observeAuthFailures(args => {
+    const { user, origin, generation } = state.current!;
+    if (!user || !origin) return;
+    if ((args?.expectedUserId != null && args.expectedUserId !== user.id)
+      || (args?.expectedOrigin != null && args.expectedOrigin !== origin)) return () => false;
+    return () => {
+      if (!isCurrent(generation)) return false;
+      const s = state.current!;
+      if (s.authExpired) return true;
+      // Keep the account identity and its library visible. Expiry is NOT logout:
+      // never clear guest/account storage or move records between the two scopes.
+      s.authExpired = true;
+      s.sync = { ...s.sync, busy: false, error: AUTH_EXPIRED_MESSAGE };
+      window.clearTimeout(flushTimer.current); flushTimer.current = undefined;
+      window.clearTimeout(syncTimer.current);
+      pending.current.clear(); needsResync.current = false;
+      render();
+      return true;
+    };
+  }), []);
   const identity = (): AccountIdentity => {
     const s = state.current!;
+    if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
     if (!s.user || !s.origin) throw new Error("请先登录当前线路的账号");
     return { expectedUserId: s.user.id, expectedOrigin: s.origin };
   };
@@ -105,15 +128,15 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   };
   const flushHistory = async () => {
     const generation = state.current!.generation;
-    if (!state.current!.user || clearing.current === generation) return;
+    if (!state.current!.user || !canSync(generation) || clearing.current === generation) return;
     if (upload.current?.generation === generation) return upload.current.promise;
     const auth = identity();
     const run = (async () => {
       for (const [key, row] of Object.entries(state.current!.data.dirtyHistory)) {
-        if (!isCurrent(generation) || clearing.current === generation) return;
+        if (!canSync(generation) || clearing.current === generation) return;
         const id = Number(key);
         await api.accountHistoryRecord(auth, id, row.ep);
-        if (!isCurrent(generation)) return;
+        if (!canSync(generation)) return;
         sentHistory.current.set(id, row.ep);
         const current = state.current!.data;
         if (current.dirtyHistory[id]?.at === row.at) {
@@ -126,15 +149,15 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     try {
       await run;
       // A timer firing while an upload was in flight joined that upload. Drain new entries afterwards.
-      if (isCurrent(generation) && Object.keys(state.current!.data.dirtyHistory).length) scheduleUpload(generation);
+      if (canSync(generation) && Object.keys(state.current!.data.dirtyHistory).length) scheduleUpload(generation);
     } finally { if (upload.current?.promise === run) upload.current = null; }
   };
   function scheduleUpload(generation: number) {
-    if (flushTimer.current || clearing.current === generation) return;
+    if (!canSync(generation) || flushTimer.current || clearing.current === generation) return;
     flushTimer.current = window.setTimeout(() => {
       flushTimer.current = undefined;
-      if (isCurrent(generation)) void flushHistory().catch(error => {
-        if (isCurrent(generation)) { state.current!.sync = { ...state.current!.sync, error: `观看历史待同步：${message(error)}` }; render(); }
+      if (canSync(generation)) void flushHistory().catch(error => {
+        if (canSync(generation)) { state.current!.sync = { ...state.current!.sync, error: `观看历史待同步：${message(error)}` }; render(); }
       });
     }, 1500);
   }
@@ -144,6 +167,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     for (let page = 1; page <= 200; page++) {
       const result = await api.accountHistory(auth, page, 100);
       if (!isCurrent(generation)) throw new Error("账号已切换");
+      if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
       if (!result || !Array.isArray(result.items) || !result.pagination || result.pagination.page !== page
         || !Number.isInteger(result.pagination.pages) || result.pagination.pages < 0 || result.pagination.pages > 200) throw new Error("账号历史返回格式异常");
       for (const row of result.items) if (!seen.has(row.id)) { seen.add(row.id); rows.push(row); }
@@ -155,6 +179,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const syncAccount = useCallback(async () => {
     const s = state.current!;
     if (!s.user) return;
+    if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
     const generation = s.generation;
     if (synchronizing.current?.generation === generation) return synchronizing.current.promise;
     if (clearing.current === generation) return;
@@ -170,6 +195,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
         (async () => { await flushHistory(); return readHistory(auth, generation); })(),
       ]);
       if (!isCurrent(generation)) return;
+      if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
       let current = state.current!.data;
       let favoritesKnown = state.current!.sync.favoritesKnown;
       const errors: string[] = [];
@@ -209,10 +235,10 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     synchronizing.current = { generation, promise: run };
     try { await run; } finally {
       if (synchronizing.current?.promise === run) synchronizing.current = null;
-      if (isCurrent(generation) && needsResync.current) {
+      if (canSync(generation) && needsResync.current) {
         needsResync.current = false;
         window.clearTimeout(syncTimer.current);
-        syncTimer.current = window.setTimeout(() => { if (isCurrent(generation)) void syncRef.current().catch(() => {}); }, 500);
+        syncTimer.current = window.setTimeout(() => { if (canSync(generation)) void syncRef.current().catch(() => {}); }, 500);
       }
     }
   }, []);
@@ -226,6 +252,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     window.clearTimeout(syncTimer.current);
     s.generation++; mutation.current++; historyMutation.current++;
     s.user = next; s.origin = nextOrigin; s.key = key;
+    s.authExpired = false;
     s.data = next ? accounts.current[key] || applyInteractions(empty(), next.interactions) : guest.current;
     s.sync = { busy: false, error: "", lastSynced: 0, favoritesKnown: false };
     sentHistory.current.clear(); pending.current.clear(); needsResync.current = false; storageError.current = "";
@@ -252,6 +279,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     const run = (async () => {
       if (s.user) await request(identity());
       if (!isCurrent(version)) throw new Error("账号已切换，原操作不会影响当前账号");
+      if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
       mutation.current++;
       persist(update(state.current!.data));
     })();
@@ -260,9 +288,9 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
       if (isCurrent(version) && pending.current.get(key) === run) {
         pending.current.delete(key); render();
         // Pending writes own their follow-up refresh; a slow write must not make sync poll every 500ms.
-        if (state.current!.user) {
+        if (state.current!.user && canSync(version)) {
           window.clearTimeout(syncTimer.current);
-          syncTimer.current = window.setTimeout(() => { if (isCurrent(version)) void syncRef.current().catch(() => {}); }, 500);
+          syncTimer.current = window.setTimeout(() => { if (canSync(version)) void syncRef.current().catch(() => {}); }, 500);
         }
       }
     }).catch(() => {});
@@ -320,6 +348,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
         for (let offset = 0; offset < rowIds.length; offset += 100) {
           await api.accountHistoryDelete(auth, rowIds.slice(offset, offset + 100));
           if (!isCurrent(version)) throw new Error("账号已切换");
+          if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
         }
       }
       if (isCurrent(version)) { historyMutation.current++; clearVersion.current++; sentHistory.current.clear(); persist({ ...state.current!.data, history: [], dirtyHistory: {}, localHistory: [] }); }
@@ -337,7 +366,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
       window.removeEventListener("focus", refresh); window.removeEventListener("online", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, []);
   const s = state.current;
-  return { user: s.user, setUser, restoreSession, generation, logout, accountScope: `${s.key}:${s.generation}`, accountSync: s.sync,
+  return { user: s.user, authExpired: s.authExpired, setUser, restoreSession, generation, logout, accountScope: `${s.key}:${s.generation}`, accountSync: s.sync,
     syncAccount, likes: s.data.likes, favs: s.data.favs, follows: s.data.follows, history: s.data.history,
     isFav: (id: number, kind: Kind = "video") => (kind === "video" ? s.data.favs : s.data.postFavs).includes(id),
     isLiked: (id: number, ep?: number, kind: Kind = "video") => kind === "post" ? s.data.postLikes.includes(id)
