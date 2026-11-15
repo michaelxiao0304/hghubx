@@ -61,7 +61,8 @@ try {
           ] };
           if (command === "line_mirrors") {
             if (fixture.failMirrors) throw "fixture: mirror publisher unavailable";
-            return { source: "fixture publisher", recommended: [{ host: "recommended.fixture.invalid", url: "https://recommended.fixture.invalid" }], items: [{ host: "mirror-one.fixture.invalid", url: MIRROR }] };
+            const recommended = { host: "recommended.fixture.invalid", url: "https://recommended.fixture.invalid" };
+            return { source: "fixture publisher", recommended: [recommended], items: [recommended, { host: "mirror-one.fixture.invalid", url: MIRROR }] };
           }
           if (command === "line_set") {
             fixture.generation++;
@@ -96,6 +97,7 @@ try {
     }, { seed, MAIN, MIRROR });
     await page.goto(`${origin}tests/line-selection.html`);
     await page.waitForFunction(() => window.lineSelectionSnapshot?.ready);
+    await page.getByRole("button", { name: "网络设置", exact: true }).click();
     return { context, page };
   }
 
@@ -138,6 +140,8 @@ try {
     await dialog.getByText("固定线路 2", { exact: true }).waitFor();
     await dialog.getByText("mirror-one.fixture.invalid", { exact: true }).waitFor();
     await dialog.getByText("recommended.fixture.invalid", { exact: true }).waitFor();
+    assert.equal(await dialog.getByText("recommended.fixture.invalid", { exact: true }).count(), 1);
+    assert.equal(await dialog.getByText("推荐镜像", { exact: true }).count(), 0);
     assert.equal((await calls(page, "line_mirrors")).length, 1);
     await dialog.getByRole("button").filter({ hasText: "mirror-one.fixture.invalid" }).click();
     await page.waitForFunction(() => window.lineSelectionFixture.base === "https://mirror-one.fixture.invalid" && window.lineSelectionSnapshot.lineEpoch === 1);
@@ -150,7 +154,7 @@ try {
     await dialog.waitFor();
     assert.equal((await calls(page, "line_mirrors")).length, 1);
     await page.screenshot({ path: join(output, mobile ? "line-picker-android.png" : "line-picker-desktop.png"), fullPage: true, animations: "disabled" });
-    report.passed.push(`${mobile ? "Android-sized sheet" : "Desktop dialog"}: Settings opens the real picker; fixed/recommended/mirror rows load; successful selection updates current line, store epoch and settings host and clears stale user UI`);
+    report.passed.push(`${mobile ? "Android-sized sheet" : "Desktop dialog"}: fixed lines and a single mirror list load; successful selection updates current line, store epoch and settings host and clears stale user UI`);
     await context.close();
   }
 

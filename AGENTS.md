@@ -1,7 +1,7 @@
 # HGhubX 迭代与构建指南
 
 本文件适用于整个仓库。用中文沟通，先确认实际运行的版本和代码状态，再修改或打包。
-当前以 `zxsos/HGhubX` 2.0.0、提交 `bebfb7a` 为实现基线。按用户决定，界面、数据 API、播放器、动态选线和构建流程跟随上游，保留 fork 的 NAT64 网络兼容、文档及本地数据迁移。
+当前以 `zxsos/HGhubX` 提交 `1620817` 为实现基线，包含 `bebfb7a` 后的 9 个提交，代码版本为 2.1.0。上游虽有 2.1.1 发布说明，但 package/Tauri/Cargo 仍为 2.1.0，不凭文档名修改版本。按用户决定，界面、数据 API、播放器、动态选线和构建流程跟随上游，保留 fork 的 NAT64 网络兼容、文档及本地数据迁移。
 1.3.0 完整迭代与打包记录归档在 [docs/build-history/2026-11-14-v1.3.0.md](docs/build-history/2026-11-14-v1.3.0.md)，不要将旧架构说明当作当前实现。
 
 ## 项目定位与技术结构
@@ -15,6 +15,8 @@
 | --- | --- |
 | `src/App.tsx`、`src/pages/`、`src/components/` | 桌面与移动界面、播放器、设置、线路与代理入口 |
 | `src/store.tsx`、`src/storage.ts` | 个人记录、播放偏好、主题、版本间存储迁移 |
+| `src/accountData.ts` | 游客与账号记录隔离、收藏/历史同步、迟到响应保护 |
+| `src/mediaTransport.ts`、`src-tauri/src/ios_media_http.rs` | iOS 原生播放器使用的受保护本机 HTTP 媒体通道 |
 | `src/api.ts`、`src-tauri/src/api.rs` | Tauri IPC 和业务接口 |
 | `src/autoLine.ts`、`src-tauri/src/lines.rs` | 发布页镜像解析、自动探测、线路切换与取消 |
 | `src-tauri/src/net.rs`、`proxy.rs`、`apple_proxy.rs` | 网络、应用代理与 Apple 系统代理判断 |
@@ -48,6 +50,9 @@
 - 原 `source.json` 仅在 `line.json` 不存在时导入，保留原文件。无效地址不放宽上游安全要求；错误信息不包含原始地址或凭据。
 - 保留 fork 对 `64:ff9b::/96` NAT64 的处理：按内嵌 IPv4 判断，允许公共地址，仍拒绝内网/回环。与上游代理路由、IPv6 优先及 SSRF 策略共同工作。
 - 不自动迁移旧 `com.hghub.huangguo` 应用容器；不同 Bundle ID 的数据不能当作同一存储。不得从旧容器批量复制账号凭据。
+- 2.1.0 通过 `pickGuestData` 将片库字段与音量/静音等设置隔离；必须保留 `store.tsx` 的 `writeAppStorage(p)`，以及迁移标记随状态保存的行为。
+- 升级前的本地收藏/历史继续保存在游客片库。登录后显示当前站点/账号的记录，退出登录恢复游客记录；账号缓存使用 `hghubx_accounts_v1`，按 origin 与用户 ID 隔离，不把游客记录自动上传或复制到任意账号。
+- 数据回归需覆盖登录/退出、账号与线路切换、迟到请求、离线缓存、偏好不回滚、重启，以及旧数据备份和迁移标记保留。真实设备数据仅导出到忽略目录作隔离验证，不写进测试 fixture 或 Git。
 
 ## 平台与安装包
 
@@ -234,3 +239,14 @@ macOS 当前默认数据目录是 `~/Library/Application Support/com.hghubx.app/
 - iOS 2.0.0 已通过现有账号开发签名导出及 IPA、描述文件、设备匹配校验。复用生成工程时同步 Info.plist 和 project.yml 的版本，保持本机 Rust 环境包装，勿交付旧导出目录里残留的 1.3.0 IPA。
 - 本次 Rust 79 项单元测试通过、4 项联网测试跳过；前端构建、迁移、网络、UI 和播放 fixture 通过。触控延迟断言在并行编译时曾失败，独立复测原阈值通过；不要为消除这类负载波动放宽生产行为或直接删断言。
 - 本机缺少 FFmpeg，播放测试通过忽略目录中的独立 FFmpeg 工具生成本地 HLS；设置 `FFMPEG_PATH` 指向工具后执行测试，无需修改全局系统环境。
+
+## 2.1.0 同步与验证注意事项
+
+- 本轮锁定上游 `162081789e09da7c9c5be50e650d0cfa227981a6`，同步范围为 9 个提交，不自动混入更新的 main。详情见 `docs/release-notes/v2.1.0-fork-sync.md`。
+- `store.tsx` 的导入冲突需同时保留迁移写入函数与上游账号同步模块。NAT64、`source_migration.rs`、旧片库备份和文档归档均保留。
+- 设置页分组默认折叠，测试需先展开对应分组；手机首次播放会显示手势引导。界面 fixture 应显式设置首次协议状态，不能据此跳过真实安装后的用户确认。
+- 线路选择使用单个镜像列表；测试数据中的 `items` 应包含推荐镜像，不再断言旧的双列表布局。搜索页使用 `api_tags`，相关 fixture 需要提供该接口。
+- 本机多个 Vite 测试会争用 5173；顺序运行套件，避免把端口冲突或并行负载当作产品故障。不放宽原有性能阈值。
+- 上游默认 CI 当前只构建前端和检查 Rust 编译；发布前仍需主动执行数据、网络和播放回归。
+- iOS 开发签名构建复用生成工程，保留 Rust 环境包装；同步版本，执行 `patch-ios-splash.mjs` 并设置 `UILaunchScreen.UIColorName=LaunchBackground`，移除旧启动 storyboard 配置。
+- 检查最终 IPA 中 `Info.ios.plist` 的本机 HTTP 例外和 iOS 专用 CSP 已生效，不能只验证 Rust 编译。Bundle ID 与签名团队不变，真机覆盖安装前后比对数据容器及收藏/历史快照，不卸载应用。

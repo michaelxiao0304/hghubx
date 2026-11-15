@@ -61,6 +61,8 @@ try {
   const load = async () => {
     await page.goto(`${origin}tests/diagnostic-copy.html`);
     await page.waitForFunction(() => !document.querySelector('[aria-label="播放诊断日志"]').disabled);
+    await page.getByRole("button", { name: "网络设置", exact: true }).click();
+    await page.getByRole("button", { name: "播放诊断设置", exact: true }).click();
   };
   const networkButton = () => page.getByRole("button").filter({ has: page.getByText("网络诊断", { exact: true }) });
 

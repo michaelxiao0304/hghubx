@@ -1,9 +1,12 @@
 mod api;
 #[cfg(any(target_os = "macos", target_os = "ios", test))]
 mod apple_proxy;
+mod cache;
 mod env;
 #[cfg(target_os = "ios")]
 mod ios_layout;
+#[cfg(any(target_os = "ios", test))]
+mod ios_media_http;
 mod lines;
 #[cfg(target_os = "linux")]
 mod linux_http;
@@ -24,6 +27,20 @@ mod source_migration;
 
 use api::Api;
 use tauri::Manager;
+
+/// AVFoundation loads media outside WKWebView's custom protocol handler.
+/// Start its loopback bridge only when an iOS native player requests it.
+#[tauri::command]
+async fn media_http_origin() -> Result<String, String> {
+    #[cfg(target_os = "ios")]
+    {
+        ios_media_http::origin().await
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        Err("原生媒体 HTTP 通道仅适用于 iOS".into())
+    }
+}
 
 fn allowed_dev_host(host: &str) -> bool {
     if matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]") {
@@ -163,11 +180,21 @@ pub fn run() {
             let uri = request.uri().clone();
             let path = uri.path().to_string();
             let query = uri.query().unwrap_or("").to_string();
+            // iOS 原生播放器会用小范围请求探测资源。只处理无条件、单头 GET Range；
+            // 尚无 ETag/Last-Modified 可校验时，If-Range 保守退回完整响应。
+            let range = if request.method() == tauri::http::Method::GET
+                && !request.headers().contains_key("If-Range")
+                && request.headers().get_all("Range").iter().count() == 1
+            {
+                request.headers().get("Range").and_then(|v| v.to_str().ok()).map(str::to_owned)
+            } else {
+                None
+            };
             // 自定义协议基址随平台不同，统一定义在 media::LOCAL_ORIGIN
             // （Windows/Android 是 http://<scheme>.localhost，macOS/iOS/Linux 是 <scheme>://localhost）。
             // 它同时是 m3u8 分片/key 改写用的前缀，必须与前端 src/api.ts 的 LOCAL 一致。
             tauri::async_runtime::spawn(async move {
-                let mut resp = media::handle(&path, &query, media::LOCAL_ORIGIN).await;
+                let mut resp = media::handle(&path, &query, media::LOCAL_ORIGIN, range.as_deref()).await;
                 if let Some(origin) =
                     request_origin.and_then(|s| tauri::http::HeaderValue::from_str(&s).ok())
                 {
@@ -185,6 +212,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             api::app_boot,
+            media_http_origin,
             playback_log::playback_log_status,
             playback_log::playback_log_set,
             playback_log::playback_log_write,
@@ -213,6 +241,9 @@ pub fn run() {
             api::api_register,
             api::api_logout,
             api::api_me,
+            api::api_account_history,
+            api::api_account_history_record,
+            api::api_account_history_delete,
             api::api_feed,
             api::api_original_videos,
             api::api_topics,

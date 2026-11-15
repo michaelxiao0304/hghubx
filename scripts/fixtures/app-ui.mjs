@@ -1,4 +1,8 @@
-export function installFixture({ theme, titles }) {
+export function installFixture({ theme, titles, accountData = false }) {
+  // Unrelated UI checks start after onboarding; production acceptance remains user-driven.
+  localStorage.setItem("hghubx_usage_agreement", JSON.stringify({
+    version: "2026-11-15-v1", accepted: true, acceptedAt: "2026-11-15T00:00:00Z",
+  }));
   const cards = titles.map((title, i) => ({
     id: i + 1, title, cover: `https://fixture.invalid/poster/${i}`, tags: ["都市", "剧情"], score: i % 2 === 0 ? 8.5 : 0,
     episode_count: 24, total_episodes: 24, hot: 286000, like_count: 1800, collect_count: 900,
@@ -9,6 +13,12 @@ export function installFixture({ theme, titles }) {
   const paged = items => ({ items, pagination: { page: 1, pages: 1, size: 30, total: items.length } });
   localStorage.setItem("hghubx_theme", theme);
   localStorage.setItem("hghubx_app_v1", JSON.stringify({ favs: [1, 2, 3, 4, 5, 6], history: [{ id: 1, ep: 3, t: 55, dur: 180, at: 123 }], searchHist: ["都市"] }));
+  const accountUser = { id: 9, username: "fixture", nickname: "示例用户", avatar: "", avatar_color: "#63748b", counts: {} };
+  if (accountData) localStorage.setItem("hghubx_accounts_v1", JSON.stringify({ version: 1, accounts: {
+    [JSON.stringify(["https://fixture.invalid", accountUser.id])]: {
+      favs: [1, 2, 3, 4, 5, 6], history: [{ id: 1, ep: 3, t: 55, dur: 180, at: 123 }],
+    },
+  } }));
   localStorage.setItem("hghubx_swipe_ep_v2", "1");
   const callbacks = new Map();
   let nextCallback = 0, backChannel;
@@ -36,9 +46,13 @@ export function installFixture({ theme, titles }) {
       if (command === "api_search_hot") return paged(titles.map((title, index) => ({ video_id: index + 1, title, plays: `${550 - index * 10}.1w播放量` })));
       if (command === "api_video") return { ...cards[(args.id - 1) % cards.length], counts: { collect: 900, comment: 20, hot: 286000, like: 1800 }, episodes: [] };
       if (command === "api_login") {
-        if (args.username === "profile-fixture") return { user: { id: 9, username: "fixture", nickname: "示例用户", avatar: "", avatar_color: "#63748b", counts: {} } };
+        if (args.username === "profile-fixture") return { user: accountUser, origin: "https://fixture.invalid" };
         throw "账号或密码不正确";
       }
+      if (command === "api_me") return { user: accountUser, origin: "https://fixture.invalid",
+        interactions: { favorite_video_ids: [1, 2, 3, 4, 5, 6], like_video_ids: [], follow_user_ids: [] } };
+      if (command === "api_account_history") return paged([{ id: 1, target_type: "video", video_id: 1,
+        last_ep: 3, updated_at: "1970-01-01T00:00:00.123Z" }]);
       if (command === "api_logout") return { ok: true };
       if (command === "security_set") return args.strict;
       if (command === "api_play") throw "UI fixture has no media";

@@ -44,9 +44,27 @@ try {
         for (const [key, value] of Object.entries(seed)) localStorage.setItem(key, value);
         sessionStorage.setItem("seeded", "1");
       }
-      Object.assign(window, { __TAURI_INTERNALS__: { async invoke(command) {
+      window.accountMigrationFixture = { offline: false, hold: false, pending: [], calls: [] };
+      Object.assign(window, { __TAURI_INTERNALS__: { async invoke(command, args = {}) {
         if (command === "app_boot") return { strict_security: true };
         if (command === "debug_log" || command === "playback_log_write") return;
+        const account = window.accountMigrationFixture;
+        if (command === "api_logout") return { ok: true };
+        if (["api_me", "api_account_history"].includes(command)) {
+          const id = args.expectedUserId;
+          const origin = args.expectedOrigin;
+          account.calls.push({ command, id, origin });
+          if (account.hold) await new Promise(resolve => account.pending.push(resolve));
+          if (account.offline) throw new Error("fixture: account offline");
+          const videoId = id * 100;
+          if (command === "api_me") return {
+            user: { id, username: `fixture-${id}` }, origin,
+            interactions: { favorite_video_ids: [videoId], like_video_ids: [], follow_user_ids: [] },
+          };
+          return { items: [{ id: videoId + 1, target_type: "video", video_id: videoId,
+            last_ep: 2, updated_at: "2026-11-01T00:00:00Z" }],
+            pagination: { page: args.page, pages: 1, size: 100, total: 1 } };
+        }
         throw new Error(`Unexpected IPC: ${command}`);
       } } });
       if (["write", "backup", "commit"].includes(failure)) {
@@ -172,6 +190,80 @@ try {
     console.log(`PASS: ${failure} failure preserves originals and retries safely`);
   }
   {
+    const seed = { "app_data_v1:default:library": JSON.stringify(state), hghubx_swipe_ep_v2: "1" };
+    const { context, page } = await open(seed);
+    const backup = (await storage(page)).hghubx_library_backup_v2;
+    // Account-library writes must retain the migration marker and the latest preferences.
+    await page.evaluate(() => {
+      const s = window.storageMigrationFixture;
+      s.setMuted(false); s.setVolume(0.81); s.setPreferHevc(false); s.addSearch("new preference");
+    });
+    await page.waitForFunction(() => window.storageMigrationFixture.volume === 0.81);
+    await page.evaluate(() => {
+      const s = window.storageMigrationFixture;
+      s.addHistory(44, 4, 37.5, 100);
+      s.toggleFavLocal(55);
+    });
+    await page.waitForFunction(() => window.storageMigrationFixture.favs.includes(55));
+    const guest = await snapshot(page);
+    assert.deepEqual(guest.favs, [55, 22]);
+    assert.equal(guest.history[0].t, 37.5);
+    assert.equal(guest.volume, 0.81);
+    assert.equal(guest.muted, false);
+    assert.equal(guest.preferHevc, false);
+    assert.equal(guest.searchHist[0], "new preference");
+    assert.equal(JSON.parse((await storage(page)).hghubx_app_v1)._libraryMigration, 2);
+
+    await page.evaluate(() => window.storageMigrationFixture.setUser({ id: 7 }, "https://account-a.invalid"));
+    await page.waitForFunction(() => window.storageMigrationFixture.accountSync.favoritesKnown
+      && !window.storageMigrationFixture.accountSync.busy);
+    assert.deepEqual((await snapshot(page)).favs, [700]);
+    assert.equal((await snapshot(page)).history[0].id, 700);
+    assert.deepEqual(JSON.parse((await storage(page)).hghubx_app_v1).history, guest.history);
+
+    // A slow response from A must not overwrite B after an account/origin switch.
+    await page.evaluate(() => {
+      window.accountMigrationFixture.hold = true;
+      window.storageMigrationFixture.syncAccount().catch(() => {});
+    });
+    await page.waitForFunction(() => window.accountMigrationFixture.pending.length === 2);
+    await page.evaluate(() => {
+      window.accountMigrationFixture.hold = false;
+      window.storageMigrationFixture.setUser({ id: 8 }, "https://account-b.invalid");
+    });
+    await page.waitForFunction(() => window.storageMigrationFixture.accountSync.favoritesKnown
+      && !window.storageMigrationFixture.accountSync.busy);
+    await page.evaluate(async () => {
+      window.accountMigrationFixture.pending.splice(0).forEach(resolve => resolve());
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    assert.deepEqual((await snapshot(page)).favs, [800]);
+    assert.equal((await snapshot(page)).history[0].id, 800);
+    const cached = JSON.parse((await storage(page)).hghubx_accounts_v1).accounts;
+    assert.deepEqual(cached[JSON.stringify(["https://account-a.invalid", 7])].favs, [700]);
+    assert.deepEqual(cached[JSON.stringify(["https://account-b.invalid", 8])].favs, [800]);
+
+    await page.evaluate(() => window.storageMigrationFixture.logout());
+    assert.deepEqual(await snapshot(page), guest);
+    await page.reload();
+    await page.waitForFunction(() => window.storageMigrationFixture?.strictSecurityReady);
+    assert.deepEqual(await snapshot(page), guest);
+    assert.equal((await storage(page)).hghubx_library_backup_v2, backup);
+
+    // An offline login keeps the existing account cache; logging out restores the migrated library.
+    await page.evaluate(() => {
+      window.accountMigrationFixture.offline = true;
+      window.storageMigrationFixture.setUser({ id: 7 }, "https://account-a.invalid");
+    });
+    await page.waitForFunction(() => !!window.storageMigrationFixture.accountSync.error);
+    assert.deepEqual((await snapshot(page)).favs, [700]);
+    assert.equal((await snapshot(page)).history[0].id, 700);
+    await page.evaluate(() => window.storageMigrationFixture.logout());
+    assert.deepEqual(await snapshot(page), guest);
+    await context.close();
+    console.log("PASS: migrated records and preferences survive account sync, late responses, offline cache, logout and restart");
+  }
+  {
     const { context, page } = await open({ hghubx_app_v1: "broken", "app_data_v1:default:library": JSON.stringify(state), hghubx_swipe_ep_v2: "1" });
     const value = await snapshot(page);
     assert.deepEqual(value.favs, state.favs);
@@ -202,7 +294,7 @@ try {
   // Optional local, library-only export. Never put real user records in fixtures.
   if (process.env.HGHUBX_MIGRATION_SEED) {
     const seed = JSON.parse(await readFile(process.env.HGHUBX_MIGRATION_SEED, "utf8"));
-    const original = JSON.parse(seed["app_data_v1:default:library"]);
+    const original = JSON.parse(seed.hghubx_app_v1 ?? seed["app_data_v1:default:library"] ?? seed.hghub_app_v1);
     const { context, page } = await open(seed);
     for (let pass = 0; pass < 2; pass++) {
       if (pass) {
