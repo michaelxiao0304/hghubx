@@ -44,7 +44,7 @@ try {
           fixture.failure = {}; fixture.user = user(7);
           return { user: fixture.user, origin: fixture.origin };
         }
-        if (cmd === "api_logout") { fixture.user = null; return { ok: true }; }
+        if (cmd === "api_logout") { fixture.logoutArgs = args; fixture.user = null; return { ok: true }; }
         let result;
         if (cmd === "api_me") result = { user: fixture.user, origin: fixture.origin, interactions: { favorite_video_ids: [fixture.user?.id === 8 ? 3 : 2], like_video_ids: [2] } };
         else if (cmd === "api_account_history") result = { items: [], pagination: { page: args.page, pages: 1, size: 100, total: 0 } };
@@ -107,6 +107,69 @@ try {
     assert.deepEqual(after.favs, before.favs); assert.deepEqual(after.history, before.history); assert.equal(after.guest, before.guest);
     await page.screenshot({ path: fileURLToPath(new URL(mobile ? "mobile-restored.png" : "desktop-restored.png", out)) });
     report.checks.push(`${mobile ? "mobile" : "desktop"}: concurrent expiry, accessible re-login, wrong password and same-account recovery preserve libraries`);
+    await context.close();
+  }
+
+  for (const mobile of [false, true]) {
+    const { page, context } = await open({ mobile, failure: { api_me: "401", api_account_history: "401" } });
+    const notice = page.getByRole("complementary", { name: "登录状态提示" });
+    await notice.waitFor();
+    const before = await state(page);
+    const dismiss = notice.getByRole("button", { name: mobile ? "暂不登录" : "关闭登录失效提示", exact: true });
+    const box = await dismiss.boundingBox();
+    assert(box.height >= 44 && box.width >= 44, "Dismiss control has a touch-sized target");
+    if (mobile) await dismiss.tap(); else { await dismiss.focus(); await page.keyboard.press("Enter"); }
+    await notice.waitFor({ state: "hidden" });
+    const dismissed = await state(page);
+    assert.equal(dismissed.expired, true); assert.equal(dismissed.user, before.user);
+    assert.deepEqual(dismissed.favs, before.favs); assert.deepEqual(dismissed.history, before.history);
+    assert.equal(dismissed.guest, before.guest); assert.equal(dismissed.accounts, before.accounts);
+    assert.equal(await page.getByRole("dialog").count(), 0, "Dismissal does not force a login dialog");
+    const calls = await page.evaluate(() => window.authFixture.calls.length);
+    await page.evaluate(() => {
+      const s = window.sessionExpiryStore;
+      s.setTab("home"); s.addHistory(2, 4, 41.75, 90);
+      window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("online"));
+    });
+    await page.waitForTimeout(1700);
+    assert.equal(await page.evaluate(() => window.authFixture.calls.length), calls, "Dismissal leaves automatic sync/upload paused");
+    assert.equal((await state(page)).history[0].t, 41.75);
+    assert.equal(await invoke(page, "accountHistory", [{ expectedUserId: 7, expectedOrigin: "https://fixture.invalid" }]), expired);
+    assert.equal(await notice.isVisible(), false, "Further 401s from the same session do not reopen a dismissed notice");
+    await page.evaluate(() => window.sessionExpiryStore.setTab("profile"));
+    await page.getByRole("button", { name: "重新登录", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "重新登录 HGhubX", exact: true });
+    await dialog.waitFor(); await dialog.getByRole("button", { name: "关闭登录" }).click();
+    await page.waitForFunction(() => !window.sessionExpiryStore.loginOpen);
+    assert.equal(await notice.isVisible(), false, "Cancelling login keeps the notice dismissed");
+    assert.equal((await state(page)).expired, true);
+    await page.getByRole("button", { name: "重新登录", exact: true }).click();
+    await dialog.getByLabel("账号", { exact: true }).fill("fixture");
+    await dialog.getByLabel("密码", { exact: true }).fill("fixture-password");
+    await dialog.locator("form").getByRole("button", { name: "登录", exact: true }).click();
+    await page.waitForFunction(() => !window.sessionExpiryStore.authExpired && !window.sessionExpiryStore.accountSync.busy && !window.sessionExpiryStore.loginOpen);
+    assert.deepEqual((await state(page)).favs, before.favs); assert.equal((await state(page)).history[0].t, 41.75);
+    await page.evaluate(() => { window.authFixture.failure.api_collect = "401"; });
+    assert.equal(await invoke(page, "collect", [2, false]), expired);
+    await notice.waitFor();
+    report.checks.push(`${mobile ? "mobile" : "desktop"}: dismiss expiry, continue without login, retain records and progress, suppress repeat notices, re-login and show a later expiry`);
+    await context.close();
+  }
+
+  {
+    const { page, context } = await open({ failure: { api_me: "401", api_account_history: "401" } });
+    const before = await state(page);
+    await page.evaluate(() => window.sessionExpiryStore.logout());
+    await page.waitForFunction(() => !window.sessionExpiryStore.user);
+    const after = await state(page); const guest = JSON.parse(before.guest);
+    assert.equal(after.expired, false); assert.equal(after.accounts, before.accounts);
+    assert.deepEqual(after.favs, guest.favs); assert.deepEqual(after.history, guest.history);
+    assert.deepEqual(await page.evaluate(() => window.authFixture.logoutArgs), { expectedUserId: 7, expectedOrigin: "https://fixture.invalid" });
+    await page.getByRole("button", { name: /未登录/ }).waitFor();
+    await page.evaluate(() => window.authFixture.switchTo(7));
+    await page.waitForFunction(() => window.sessionExpiryStore.authExpired);
+    assert.deepEqual((await state(page)).favs, before.favs); assert.deepEqual((await state(page)).history, before.history);
+    report.checks.push("explicit logout after expiry restores guest library and retains the separate account cache with identity guards");
     await context.close();
   }
 

@@ -266,8 +266,10 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     setUser(user, origin);
   }, [setUser]);
   const logout = useCallback(async () => {
-    const version = state.current!.generation;
-    await api.logout(state.current!.user ? identity() : undefined);
+    const { generation: version, user, origin } = state.current!;
+    // Logout clears the local session even when its token has expired. Retain
+    // identity matching and generation guards without requiring a valid token.
+    await api.logout(user ? { expectedUserId: user.id, expectedOrigin: origin } : undefined);
     if (!isCurrent(version)) throw new Error("账号已切换");
     setUser(null);
   }, [setUser]);

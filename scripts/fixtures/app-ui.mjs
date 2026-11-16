@@ -38,7 +38,7 @@ export function installFixture({ theme, titles, accountData = false }) {
       if (command === "playback_log_status") return { enabled: false, path: null, error: null };
       if (command === "line_auto") return { base: "https://fixture.invalid", previous: "https://fixture.invalid", switched: false, pick: { tier: "main", ms: 1, reason: "fixture", candidates: [] } };
       if (command === "api_feed") return paged([]);
-      if (["api_category", "api_original_videos", "api_search", "api_posts", "api_post_category", "api_tag_videos"].includes(command)) return paged(cards);
+      if (["api_category", "api_original_videos", "api_search", "api_posts", "api_post_category", "api_tag_videos", "api_post_tag"].includes(command)) return paged(cards);
       if (command === "api_topics") return paged([topic]);
       if (command === "api_topic") return { topic, videos: paged(cards), related: [] };
       if (command === "api_tags") return { categories: [{ name: "题材", tags: [{ id: 1, name: "都市", slug: "city" }] }] };
