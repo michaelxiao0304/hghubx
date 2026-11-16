@@ -266,3 +266,4 @@ macOS 当前默认数据目录是 `~/Library/Application Support/com.hghubx.app/
 - `accountData.logout` 可以在失效状态下发起退出，但必须保留 expected user/origin 与 generation 检查；不能把游客片库和账号缓存混合。
 - 登录失效回归覆盖键盘/触控关闭、取消登录、重复 401、继续观看保存进度、重新登录后再次失效及失效后主动退出。标签回归覆盖仅有帖子、标签名称与 slug 区别、迟到响应、独立重试和内容屏蔽。
 - 本次变更和验证记录见 `docs/release-notes/v2.1.2-fork-sync.md`；实际构建和安装结果以该记录及本地产物元信息为准。
+- 本轮 2.1.2 Universal DMG 和开发签名 IPA 已校验；Mac 已备份后覆盖安装并比对原有游客/账号收藏、历史和播放进度。iOS 仅打包，不能沿用 2.1.1 的真机结果宣称本轮已安装或播放通过。
