@@ -8,11 +8,23 @@ import { flushPlaybackLog, initPlaybackLog, playbackLogApi, setPlaybackLog } fro
 import Settings from "../src/features/settings/Settings";
 import Hls from "hls.js";
 import Profile from "../src/features/account/Profile";
+import LoginModal from "../src/features/account/LoginModal";
 import { Player, VideoSurface } from "../src/features/playback";
 
 // 仅将自定义媒体协议映射到本地测试服务器；播放器、HLS 和鼠标事件均使用真实实现。
 const proxy = new URLSearchParams(location.search).get("proxy") || "http://127.0.0.1:17779";
 const open = XMLHttpRequest.prototype.open;
+const feedbackMode = new URLSearchParams(location.search).get("feedback");
+const realPlay = api.play;
+const pendingPlayback: ((value: unknown) => void)[] = [];
+if (feedbackMode) Object.assign(window, { __TAURI_INTERNALS__: { async invoke(command: string) {
+  if (command === "api_play") {
+    if (feedbackMode === "hang") return new Promise(resolve => pendingPlayback.push(resolve));
+    throw `HTTP ${feedbackMode === "auth" ? 401 : 403} fixture response`;
+  }
+  if (command === "debug_log" || command === "playback_log_write" || command === "set_text_interaction") return;
+  throw new Error(`Unexpected fixture IPC: ${command}`);
+} } });
 XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, target: string | URL, async: boolean = true, user?: string | null, credential?: string | null) {
   const url = new URL(String(target), location.href);
   if (url.hostname === "hg.localhost" || (url.hostname === "localhost" && url.protocol === "hg:")) {
@@ -30,6 +42,8 @@ const fixture = {
   setLogging: setPlaybackLog,
   flushLogs: flushPlaybackLog,
   rejectLoggingSave: false,
+  pendingPlaybackCount: () => pendingPlayback.length,
+  resolvePlayback: (index: number) => pendingPlayback[index]({ id: 991, ep_num: 1, video_url: "https://media.fixture.invalid/list.m3u8" }),
   pauseBuffering: () => testHls?.pauseBuffering(),
   resumeBuffering: () => testHls?.resumeBuffering(),
   suppressMediaRecovery: false,
@@ -95,6 +109,7 @@ document.addEventListener("seeking", (e) => {
 window.addEventListener("error", (e) => fixture.errors.push(e.message));
 api.boot = async () => ({ user: null, logged_in: false, base: "https://fixture.invalid", strict_security: true });
 api.play = async (id, ep = 1) => {
+  if (feedbackMode) return realPlay(id, ep);
   if (fixture.rejectPlaybackApi) throw new Error("fixture playback API unavailable");
   return { id: 991, ep_num: 1, title: "Seek fixture", duration: 90, video_url: libraryTest ? `https://media.fixture.invalid/list.m3u8?video=${id}&episode=${ep}` : "https://media.fixture.invalid/list.m3u8" };
 };
@@ -135,6 +150,7 @@ function Fixture() {
     <button onClick={() => setActive((v) => !v)}>切换播放页激活状态</button>
     {diagnosticTest && <button onClick={() => setSettings(v => !v)}>诊断设置</button>}
     {settings && <div style={{ position: "relative", width: 900, height: 700 }}><Settings onBack={() => setSettings(false)} wide /></div>}
+    {feedbackMode && <LoginModal />}
   </AppProvider>;
 }
 createRoot(document.querySelector("#root")!).render(libraryTest ? <AppProvider><LibraryFixture /></AppProvider> : <Fixture />);
@@ -157,7 +173,7 @@ async function checkIdleSeekTarget() {
   }
   throw new Error("等待播放或控制条隐藏超时");
 }
-if (!legacyTest && !initiallyInactive && !delayedMount && !portraitFitTest && !libraryTest) void checkIdleSeekTarget().catch((error) => {
+if (!legacyTest && !initiallyInactive && !delayedMount && !portraitFitTest && !libraryTest && !feedbackMode) void checkIdleSeekTarget().catch((error) => {
   fixture.errors.push(String(error));
   document.querySelector("#results")!.textContent = JSON.stringify({ passed: 0, failed: 1, error: String(error) });
 });

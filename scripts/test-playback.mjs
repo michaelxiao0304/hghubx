@@ -17,14 +17,14 @@ const scriptScenarios = {
 };
 const { values: args } = parseArgs({ options: {
   "media-dir": { type: "string" }, output: { type: "string" }, "browser-executable": { type: "string" },
-  scenarios: { type: "string", default: "seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume" }, help: { type: "boolean" },
+  scenarios: { type: "string", default: "seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,feedback" }, help: { type: "boolean" },
 } });
 if (args.help) {
-  console.log("pnpm test:playback [--media-dir DIR] [--output NEW_DIR] [--browser-executable PATH] [--scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,ios-native,recovery,review,tv]");
+  console.log("pnpm test:playback [--media-dir DIR] [--output NEW_DIR] [--browser-executable PATH] [--scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,feedback,ios-native,recovery,review,tv]");
   process.exit(0);
 }
 const scenarios = args.scenarios.split(",");
-assert(scenarios.length && scenarios.every(s => ["seek", "legacy", "lifecycle", "gesture", "proxy", "portrait-fit", "rotation", "resume", "ios-native", "recovery", "review", "tv"].includes(s)), "Unknown scenario");
+assert(scenarios.length && scenarios.every(s => ["seek", "legacy", "lifecycle", "gesture", "proxy", "portrait-fit", "rotation", "resume", "feedback", "ios-native", "recovery", "review", "tv"].includes(s)), "Unknown scenario");
 const output = resolve(args.output || join(root, "test-results", "playback", new Date().toISOString().replace(/[:.]/g, "-")));
 await mkdir(dirname(output), { recursive: true });
 await mkdir(output); // Refuse to overwrite artifacts from an earlier run.
@@ -631,6 +631,45 @@ async function explicitRecoveryCheck(page) {
   return { players };
 }
 
+async function feedbackChecks(page) {
+  const url = `${report.ui}/tests/player-seek.html?diagnostics=1&proxy=${encodeURIComponent(report.media)}`;
+  for (const legacy of [false, true]) {
+    for (const status of [401, 403]) {
+      await page.route("**/hls?*", route => route.fulfill({ status, body: "private fixture response must not be displayed" }));
+      await page.goto(`${url}${legacy ? "&legacy=1" : ""}`);
+      await page.getByRole("alert").waitFor();
+      const message = await page.getByRole("alert").innerText();
+      assert.match(message, new RegExp(`片源拒绝访问.*${status}`));
+      assert(!message.includes("private fixture"));
+      assert.equal(await page.getByRole("button", { name: "重新登录", exact: true }).count(), 0, "CDN authorization errors do not imply an expired account");
+      await page.unroute("**/hls?*");
+    }
+  }
+  await page.goto(`${url}&feedback=auth`);
+  await page.getByText("登录已失效，请重新登录", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "重新登录", exact: true }).click();
+  await page.getByRole("button", { name: "关闭登录", exact: true }).click();
+  await page.getByRole("button", { name: "关闭播放错误提示" }).click();
+  assert.equal(await page.getByRole("button", { name: "查看播放错误" }).count(), 1, "account failure notice can be dismissed");
+  await page.goto(`${url}&feedback=forbidden`);
+  await page.getByRole("alert").waitFor();
+  assert.match(await page.getByRole("alert").innerText(), /403/);
+  assert.equal(await page.getByRole("button", { name: "重新登录", exact: true }).count(), 0);
+
+  await page.clock.install();
+  await page.goto(`${url}&feedback=hang`);
+  await page.waitForFunction(() => window.playerSeekFixture.pendingPlaybackCount() === 1);
+  await page.clock.fastForward(30500);
+  await page.getByText("获取播放地址超时，请检查网络或切换线路后重试", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "重试", exact: true }).click();
+  await page.waitForFunction(() => window.playerSeekFixture.pendingPlaybackCount() === 2);
+  await page.evaluate(() => window.playerSeekFixture.resolvePlayback(0));
+  assert.equal(await page.locator("video").count(), 0, "late timed-out API result cannot attach media");
+  await page.evaluate(() => window.playerSeekFixture.resolvePlayback(1));
+  await page.waitForFunction(() => document.querySelector("video")?.currentTime > 1);
+  return { media_auth_is_not_account_auth: true, login_action_and_dismissal: true, api_timeout_retry_and_late_response: true };
+}
+
 try {
   if (scenarios.some(name => name !== "ios-native" && name !== "tv")) {
     let mediaDir = args["media-dir"] && resolve(args["media-dir"]);
@@ -743,7 +782,7 @@ try {
         console.log(`PASS ${name}: ${JSON.stringify(result.metrics)}`);
         continue;
       }
-      const action = name === "rotation" ? rotationChecks(page) : name === "resume" ? resumeChecks(page) : name === "recovery" ? explicitRecoveryCheck(page) : name === "proxy" ? proxyRecoveryCheck(page) : name === "gesture" ? gestureChecks(page) : name === "portrait-fit" ? portraitFitChecks(page) : name === "seek" || name === "legacy" ? seekChecks(page, name === "legacy") : lifecycleCheck(page);
+      const action = name === "feedback" ? feedbackChecks(page) : name === "rotation" ? rotationChecks(page) : name === "resume" ? resumeChecks(page) : name === "recovery" ? explicitRecoveryCheck(page) : name === "proxy" ? proxyRecoveryCheck(page) : name === "gesture" ? gestureChecks(page) : name === "portrait-fit" ? portraitFitChecks(page) : name === "seek" || name === "legacy" ? seekChecks(page, name === "legacy") : lifecycleCheck(page);
       result.metrics = await Promise.race([action, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Scenario exceeded 45 seconds")), 45000); })]);
       assert.deepEqual(pageErrors, [], "Browser script errors");
       assert.deepEqual(externalRequests, [], "Unexpected external network requests");

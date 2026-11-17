@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useImperativeHandle, useRef, forwardRef, us
 import Hls from "hls.js";
 import { platform } from "../../shared/api/api";
 import { connectNativeMedia, playbackSource } from "./mediaTransport";
-import { mediaErrorMessage } from "./mediaErrors";
+import { hlsErrorMessage, mediaErrorMessage } from "./mediaErrors";
+import { usePlaybackWatchdog } from "./usePlaybackWatchdog";
 import { mediaHost, mediaResource, observeHls, usePlayerDiagnostics } from "../../shared/diagnostics/playbackDiagnostics";
 import { usePlaybackActivity } from "./usePlaybackActivity";
 import { useProxyPlaybackRecovery } from "./useProxyPlaybackRecovery";
@@ -40,6 +41,7 @@ type Props = {
   onPlaying?: () => void;
   onPause?: () => void;
   onWaiting?: () => void;
+  onLoadingStatus?: (message: string) => void;
   onEnded?: () => void;
   onError?: (msg: string) => void;
   onClick?: () => void;
@@ -49,7 +51,7 @@ type Props = {
 /** 只负责「播」：hls.js + video 元素，控制条由外层渲染。 */
 const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   { src, poster, autoPlay = true, active = true, measurementKey = src, diagnosticContext = {}, muted = false, loop = false, fit = "contain", volume = 1, rate = 1,
-    onTime, onDuration, onSize, onPlaying, onPause, onWaiting, onEnded, onError, onClick, className = "" },
+    onTime, onDuration, onSize, onPlaying, onPause, onWaiting, onLoadingStatus, onEnded, onError, onClick, className = "" },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -65,6 +67,9 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { ...diagnosticContext, active, resource: mediaResource(src) });
   const activity = usePlaybackActivity(videoRef, hlsRef, { active, autoPlay, src, trace });
   const proxyRecovery = useProxyPlaybackRecovery(videoRef, src, activity, trace);
+  const watchdog = usePlaybackWatchdog(videoRef, hlsRef, src, activity, proxyRecovery,
+    message => { recoveryRef.current?.dispose(); onError?.(message); }, trace);
+  useEffect(() => { onLoadingStatus?.(watchdog.status); }, [watchdog.status, onLoadingStatus]);
 
   const reportSize = (v: HTMLVideoElement | null) => {
     if (!v || v !== videoRef.current || attachedSource.current !== latestSource.current || v.readyState < 1) return;
@@ -90,7 +95,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   useImperativeHandle(ref, () => ({
     el: () => videoRef.current,
     play: () => activity.play("handle"),
-    retry: () => { if (activity.isActive()) proxyRecovery.retry("manual", true); },
+    retry: watchdog.retry,
     pause: () => activity.pause(),
     toggle: () => {
       const v = videoRef.current;
@@ -175,7 +180,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         isActive: activity.isActive,
         resumePlayback: () => activity.play("media_recovery", true),
         onFatal: data => {
-          onError?.(`${data.type}/${data.details}`);
+          watchdog.fail(hlsErrorMessage(data));
           if (data.type !== Hls.ErrorTypes.NETWORK_ERROR && data.type !== Hls.ErrorTypes.MEDIA_ERROR) {
             hls.destroy(); hlsRef.current = null;
           }
@@ -193,9 +198,9 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
       hls.on(Hls.Events.ERROR, (_e, data) => recovery.error(data));
     } else {
       disconnectNative = connectNativeMedia(video, source, {
-        isCurrent: () => latestSource.current === src && videoRef.current === video,
+        isCurrent: () => latestSource.current === src && videoRef.current === video && !watchdog.isStopped(),
         onReady: () => { if (activity.isPlayWanted() && !resume) activity.play("native_autoplay", true); },
-        onError: message => { trace("source.transport_error"); onError?.(message); },
+        onError: message => { trace("source.transport_error"); watchdog.fail(message); },
       });
     }
 
@@ -230,7 +235,9 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
 
   const handleVideoError = () => {
     if (hlsRef.current) return;
-    onError?.(mediaErrorMessage(videoRef.current?.error ?? null));
+    const error = videoRef.current?.error ?? null;
+    if (error?.code === 2) watchdog.networkError();
+    else watchdog.fail(mediaErrorMessage(error));
   };
 
   return (

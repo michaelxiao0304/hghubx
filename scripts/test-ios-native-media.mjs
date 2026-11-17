@@ -35,9 +35,10 @@ try {
   }
   browser = await chromium.launch({ headless: true, executablePath });
 
-  async function open(component, { platform = "ios", supported = false, src = UPSTREAM, hold = false, fail = false, autoPlay = true } = {}) {
+  async function open(component, { platform = "ios", supported = false, src = UPSTREAM, hold = false, fail = false, autoPlay = true, clocked = false } = {}) {
     const context = await browser.newContext({ userAgent: agents[platform] });
     const page = await context.newPage();
+    if (clocked) await page.clock.install();
     page.on("pageerror", error => pageErrors.push(error.message));
     await page.route("**/*", route => new URL(route.request().url()).origin === new URL(origin).origin ? route.continue() : route.abort());
     await page.addInitScript(({ component, supported, src, hold, fail, autoPlay, ORIGIN }) => {
@@ -81,10 +82,93 @@ try {
     return { src: document.querySelector("video")?.getAttribute("src") ?? null, assignments: fixture.assignments, origins: fixture.origins, hls: fixture.hls, errors: fixture.errors, plays: fixture.plays };
   });
   const settle = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  async function advance(page, ms) { await page.clock.fastForward(ms); await page.clock.runFor(500); await settle(page); }
   async function render(page, change) { await page.evaluate(change => window.nativeMediaFixture.render(change), change); await settle(page); }
   async function resolveOrigin(page, index, value = ORIGIN) { await page.evaluate(({ index, value }) => window.nativeMediaFixture.waiters[index].resolve(value), { index, value }); await settle(page); }
 
   for (const component of ["surface", "player"]) {
+    // A native transport can remain pending without a MediaError indefinitely.
+    // Exercise the real components with controlled time, without production-only test flags.
+    {
+      const { context, page } = await open(component, { hold: true, clocked: true });
+      await page.waitForFunction(() => window.nativeMediaFixture.origins === 1);
+      await advance(page, 20500);
+      assert.equal((await snapshot(page)).origins, 2, `${component}: silent loading retries after 20 seconds`);
+      await advance(page, 20500);
+      assert.equal((await snapshot(page)).origins, 3, `${component}: second bounded loading retry`);
+      await advance(page, 20500);
+      if (component === "surface") assert.match((await snapshot(page)).errors.at(-1) || "", /超时/);
+      else {
+        assert.match(await page.getByRole("alert").innerText(), /超时/);
+        await page.getByRole("button", { name: "关闭播放错误提示" }).click();
+        assert.equal(await page.getByRole("button", { name: "查看播放错误" }).count(), 1);
+      }
+      await advance(page, 60000);
+      assert.equal((await snapshot(page)).origins, 3, "terminal timeout does not create infinite retries");
+      await resolveOrigin(page, 2);
+      assert.equal((await snapshot(page)).src, null, "terminal timeout ignores a late native connection");
+      await page.getByRole("button", { name: "重试", exact: true }).click();
+      await page.waitForFunction(() => window.nativeMediaFixture.origins === 4);
+      // Old native origin promises cannot overwrite the connection chosen by manual retry.
+      await resolveOrigin(page, 0, "http://127.0.0.1:34789/obsolete");
+      assert.equal((await snapshot(page)).src, null);
+      passed++; await context.close();
+    }
+    {
+      const { context, page } = await open(component, { hold: true, clocked: true, autoPlay: false });
+      await advance(page, 65000);
+      assert.equal((await snapshot(page)).origins, 1, "no playback intent means no timeout or retry");
+      const play = component === "player"
+        ? page.getByRole("group", { name: "播放控制", exact: true }).getByRole("button", { name: "播放", exact: true })
+        : page.getByRole("button", { name: "播放", exact: true });
+      await play.click();
+      await render(page, { active: false });
+      await advance(page, 65000);
+      assert.equal((await snapshot(page)).origins, 1, "covered page does not timeout or retry");
+      await render(page, { active: true });
+      await page.evaluate(() => { Object.defineProperty(document, "hidden", { configurable: true, value: true }); document.dispatchEvent(new Event("visibilitychange")); });
+      await advance(page, 65000);
+      assert.equal((await snapshot(page)).origins, 1, "background time does not consume retry budget");
+      await page.evaluate(() => { Object.defineProperty(document, "hidden", { configurable: true, value: false }); document.dispatchEvent(new Event("visibilitychange")); });
+      await advance(page, 20500);
+      assert.equal((await snapshot(page)).origins, 2, "foreground resumes bounded monitoring");
+      if (component === "surface") {
+        await page.getByRole("button", { name: "暂停", exact: true }).click();
+        await advance(page, 65000);
+        assert.equal((await snapshot(page)).origins, 2, "explicit pause cancels loading monitoring");
+      }
+      assert.deepEqual((await snapshot(page)).errors, []);
+      passed++; await context.close();
+    }
+    {
+      const { context, page } = await open(component, { hold: true, clocked: true });
+      await page.waitForFunction(() => window.nativeMediaFixture.origins === 1);
+      for (let failure = 1; failure <= 3; failure++) {
+        if (failure === 3) {
+          await page.evaluate(() => {
+            const video = document.querySelector("video");
+            // A restored position is not playback progress and must not renew the retry budget.
+            Object.defineProperty(video, "paused", { configurable: true, value: false });
+            Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
+            video.currentTime = 30;
+            video.dispatchEvent(new Event("seeked"));
+          });
+        }
+        await page.evaluate(() => {
+          const video = document.querySelector("video");
+          Object.defineProperty(video, "error", { configurable: true, value: { code: 2 } });
+          video.dispatchEvent(new Event("error"));
+        });
+        await advance(page, 1000);
+        assert.equal((await snapshot(page)).origins, Math.min(failure + 1, 3), "native network errors have a finite recovery budget");
+      }
+      const message = component === "surface" ? (await snapshot(page)).errors.at(-1) : await page.getByRole("alert").innerText();
+      assert.match(message, /网络连接失败.*重试 2 次/);
+      assert(!message.includes("登录"), "native transport failure is not an account failure");
+      await advance(page, 65000);
+      assert.equal((await snapshot(page)).origins, 3);
+      passed++; await context.close();
+    }
     // First assertion intentionally checks old components' behavior too: baseline needs no new helper import.
     {
       const { context, page } = await open(component);

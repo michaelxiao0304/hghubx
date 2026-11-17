@@ -46,6 +46,8 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
    在首页被屏蔽时通过 `onBlocked` 跳过，在上下文播放页则关闭面板。
 7. `requestPlay(id, episode)` 的 key 是
    `` `${accountScope}:${lineEpoch}:${id}:${episode}` ``，最多缓存 12 个 Promise。
+   `playbackRequest` 对前端等待设置 30 秒上限；超时释放 single-flight 条目并显示错误，
+   手动重试可发出新请求。它不取消原生 IPC，旧请求迟到的结果也不能挂载媒体或覆盖新结果。
    当前集开始播放后，才预取下一集的地址；下一部视频还要先通过详情/标签检查。
 8. 评论面板使用 `api.comments` 或 `api.postComments`，选集使用当前 `detail.episodes`，
    详情面板显示作者/标签/相关推荐。桌面端停靠 `desktop-dock-panel`，移动端使用
@@ -84,6 +86,8 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
   缓存留在当前 Feed 实例，读取按 `lineEpoch:curId` 隔离，不把旧线路键当作当前结果。
 - 评论/选集面板只在 `active` 且 `allowed` 时保持开放；被覆盖时关闭，不阻塞返回键
   或下层 Feed。
+- 播放错误由共享 `PlaybackFeedback` 显示，可关闭/重新查看、重试或进入“设置 → 网络”。
+  标准业务 401 显示重新登录入口，媒体 401/403 不触发账号清理；原有会话失效与本地续记规则保持。
 
 ## 验证命令
 
@@ -91,6 +95,7 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
 pnpm build
 pnpm test:smoke
 pnpm test:api-loading
+pnpm test:playback --scenarios feedback
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 

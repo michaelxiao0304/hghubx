@@ -21,7 +21,7 @@ type SettingGroup = typeof SETTING_GROUPS[number];
 
 /* 独立设置页：线路 / 外观 / 播放 / 本地数据 / 清理缓存 / 网络诊断 / 关于
    入口：Windows 侧栏「设置」、Android「我的」右上角齿轮 */
-export default function Settings({ onBack, initialSection }: { onBack: () => void; wide: boolean; initialSection?: "内容偏好" }) {
+export default function Settings({ onBack, initialSection }: { onBack: () => void; wide: boolean; initialSection?: "内容偏好" | "网络" }) {
   const { theme, themePreference, setTheme, favs, history, muteOnStartup, setMuteOnStartup, preferHevc, setPreferHevc, fsIdleSecs, setFsIdleSecs, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity, toast } = useStore();
   const [about, setAbout] = useState(false);
   const [agreementOpen, setAgreementOpen] = useState(false);

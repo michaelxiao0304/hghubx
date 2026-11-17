@@ -1,11 +1,12 @@
 import { Button, Input } from "../../shared/ui/ios/controls";
-import { Loader } from "../../shared/ui/ios/effects";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Hls from "hls.js";
 import { fmtTime, platform } from "../../shared/api/api";
 import { connectNativeMedia, playbackSource } from "./mediaTransport";
-import { mediaErrorMessage } from "./mediaErrors";
+import { hlsErrorMessage, mediaErrorMessage } from "./mediaErrors";
+import { usePlaybackWatchdog } from "./usePlaybackWatchdog";
+import { PlaybackFeedback } from "./PlaybackFeedback";
 import { mediaHost, mediaResource, observeHls, usePlayerDiagnostics } from "../../shared/diagnostics/playbackDiagnostics";
 import { usePlaybackActivity } from "./usePlaybackActivity";
 import { useProxyPlaybackRecovery } from "./useProxyPlaybackRecovery";
@@ -50,6 +51,8 @@ export default function Player({
   const [duration, setDuration] = useState(0);
   const [rate, setRate] = useState(1);
   const [errMsg, setErrMsg] = useState<string>("");
+  const watchdog = usePlaybackWatchdog(videoRef, hlsRef, src, activity, proxyRecovery,
+    message => { recoveryRef.current?.dispose(); setErrMsg(message); setWaiting(false); setPlaying(false); }, trace);
   const [controlsLocked, setControlsLocked] = useState(false);
   const seek = useSeekInput({ time, duration, enabled: active && !controlsLocked, resetKey: src,
     onInteraction: (phase, input, target, pointerTarget) => trace(`seek.input.${phase}`, { input, target, pointer_target: pointerTarget }),
@@ -111,9 +114,7 @@ export default function Player({
         isActive: activity.isActive,
         resumePlayback: () => activity.play("media_recovery", true),
         onFatal: data => {
-          const detail = `${data.type}/${data.details}/${data.response?.code ?? ""}/${String(data.reason ?? "").slice(0, 80)}`;
-          (window as unknown as { __hlsErr?: string }).__hlsErr = detail;
-          setErrMsg(detail); setWaiting(false); setPlaying(false);
+          watchdog.fail(hlsErrorMessage(data));
           if (data.type !== Hls.ErrorTypes.NETWORK_ERROR && data.type !== Hls.ErrorTypes.MEDIA_ERROR) {
             hls.destroy(); hlsRef.current = null;
           }
@@ -129,14 +130,13 @@ export default function Player({
       });
       hls.on(Hls.Events.FRAG_BUFFERED, () => {
         recovery.buffered();
-        setErrMsg("");
       });
       hls.on(Hls.Events.ERROR, (_e, data) => recovery.error(data));
     } else {
       disconnectNative = connectNativeMedia(video, source, {
-        isCurrent: () => latestSource.current === src && videoRef.current === video,
+        isCurrent: () => latestSource.current === src && videoRef.current === video && !watchdog.isStopped(),
         onReady: () => { if (activity.isPlayWanted() && !resume) activity.play("native_autoplay", true); },
-        onError: message => { trace("source.transport_error"); setWaiting(false); setPlaying(false); setErrMsg(message); },
+        onError: message => { trace("source.transport_error"); watchdog.fail(message); },
       });
     }
 
@@ -174,7 +174,7 @@ export default function Player({
   const retry = () => {
     if (!activity.isActive()) return;
     setErrMsg(""); setWaiting(true); setPlaying(false);
-    proxyRecovery.retry("manual", true);
+    watchdog.retry();
   };
 
   const cycleRate = () => {
@@ -211,26 +211,15 @@ export default function Player({
         onEnded={() => { if (activity.isActive()) onEnded?.(); }}
         onError={() => {
           if (hlsRef.current) return;
-          setWaiting(false);
-          setPlaying(false);
-          setErrMsg(mediaErrorMessage(videoRef.current?.error ?? null));
+          const error = videoRef.current?.error ?? null;
+          if (error?.code === 2) watchdog.networkError();
+          else watchdog.fail(mediaErrorMessage(error));
         }}
       />
 
-      {errMsg && (
-        <div role="alert" className="absolute left-2 top-2 z-30 max-w-[80%] rounded bg-black/70 px-2 py-1 text-[12px] leading-tight text-red-300 break-all">
-          <span>{errMsg}</span>
-          <Button onClick={retry} disabled={!active} className="ml-2 px-2 py-1 text-white">重试</Button>
-        </div>
-      )}
+      {active && <PlaybackFeedback error={errMsg} waiting={waiting || !!watchdog.status} status={watchdog.status} onRetry={retry} />}
 
-      {waiting && !errMsg && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <Loader className="w-9 h-9 spinner" />
-        </div>
-      )}
-
-      {!playing && !waiting && !errMsg && (
+      {!playing && !waiting && !watchdog.status && !errMsg && (
         <Button onClick={toggle} aria-label="播放"
           className="absolute inset-0 flex items-center justify-center">
           <span className="w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">

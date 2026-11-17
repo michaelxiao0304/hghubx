@@ -25,6 +25,8 @@
 | 2026-11-18 | 旋转切错收藏 | 手机横置后当前 A 变为 B 并从头播放 | 旋转缩短容器高度后旧 scroll 事件算出另一索引，150ms 回调未取消；旧延迟校正还会回拉快速往返 | 尺寸变化只按当前内容校正，取消旧候选，执行前验证尺寸/位置；不保留跨条目的延迟回拉 | `src/features/feed/Feed.tsx`；`test-playback --scenarios rotation` 修复前 992 != 991、修复后通过 |
 | 2026-11-18 | 收藏与切剧不续播 | A 第 2 集切到 B 再回 A 从第 1 集/开头播放 | 收藏入口不传历史，Feed 只恢复初次显式参数，切剧前的未节流进度没有补存 | 统一按访问视频读取当前片库，切换/失活/卸载补存；实际播放后才更新历史；手动选集仍从开头播放 | `src/features/feed/useWatchProgress.ts`；`test-playback --scenarios resume` 修复前 1 != 2，覆盖同列表往返、收藏再进入及刷新 |
 
+| 2026-11-18 | 静默加载无反馈 | 视频一直转圈且没有错误提示 | 只处理媒体 error/fatal，原生传输挂起、时钟停滞和播放 IPC 长时间未返回没有前端等待上限 | 有播放意图且前台无进展时有限重试；暂停/后台不误报，终止后停止恢复；区分媒体 401/403 与业务账号失效，提示可关闭 | `usePlaybackWatchdog.ts`、`playbackRequest.ts`；`test-ios-native-media.mjs` 修复前 20 秒后连接次数 1 != 2；`test-playback --scenarios feedback` |
+
 新回归的追加方式：
 
 1. 在对应子系统页确认这是当前行为变化，不是提案。

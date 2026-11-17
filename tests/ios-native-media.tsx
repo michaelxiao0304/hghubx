@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Player, VideoSurface, type VideoHandle } from "../src/features/playback";
+import "../src/index.css";
 
 type Configuration = { component: "surface" | "player"; src: string; mounted: boolean; active: boolean; muted: boolean; autoPlay: boolean };
 const fixture = (window as unknown as { nativeMediaFixture: {
@@ -19,8 +20,8 @@ function Harness() {
   }, []);
   if (!config.mounted) return null;
   return config.component === "surface"
-    ? <><button onClick={() => video.current?.play()}>播放</button><VideoSurface ref={video} src={config.src} active={config.active} muted={config.muted} autoPlay={config.autoPlay} onError={message => fixture.errors.push(message)} /></>
-    : <Player src={config.src} active={config.active} muted={config.muted} autoPlay={config.autoPlay} />;
+    ? <><button onClick={() => video.current?.play()}>播放</button><button onClick={() => video.current?.pause()}>暂停</button><button onClick={() => video.current?.retry()}>重试</button><VideoSurface ref={video} src={config.src} active={config.active} muted={config.muted} autoPlay={config.autoPlay} onError={message => fixture.errors.push(message)} /></>
+    : <div style={{ height: 360 }}><Player className="w-full h-full" src={config.src} active={config.active} muted={config.muted} autoPlay={config.autoPlay} /></div>;
 }
 
 createRoot(document.getElementById("root")!).render(<Harness />);

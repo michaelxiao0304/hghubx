@@ -3,6 +3,8 @@ import { Loader } from "../../shared/ui/ios/effects";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWatchProgress } from "./useWatchProgress";
+import { PlaybackFeedback } from "../playback/PlaybackFeedback";
+import { playbackRequest } from "../playback/playbackRequest";
 import { useFsOrientation } from "../playback/useFsOrientation";
 import { api, cover, fmt, fmtTime, isMobile, logLine } from "../../shared/api/api";
 import type { Detail, Episode, PlayInfo, Post, VideoCard } from "../../shared/api/types";
@@ -62,7 +64,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     const key = `${accountScope}:${store.lineEpoch}:${id}:${episode}`;
     let request = playRequests.current.get(key);
     if (!request) {
-      request = api.play(id, episode).finally(() => {
+      request = playbackRequest(api.play(id, episode)).finally(() => {
         if (playRequests.current.get(key) === request) playRequests.current.delete(key);
       });
       playRequests.current.set(key, request);
@@ -115,6 +117,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const [controlsLocked, setControlsLocked] = useState(false);
   const [rate, setRate] = useState(1);
   const [waiting, setWaiting] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState("");
   const [err, setErr] = useState("");
   const [panel, setPanel] = useState<"episodes" | "comments" | "article" | "detail" | null>(null);
   const theater = store.theater;
@@ -453,7 +456,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         setPlayUrls((m) => ({ ...m, [playKey]: streamUrl }));
         if (hevcStream) setHevcUrls((m) => ({ ...m, [playKey]: hevcStream }));
       })
-      .catch((e) => { if (alive) setErr((e as Error).message || "取播放地址失败"); });
+      .catch((e) => { if (alive && isCurrentPlayback()) { setErr((e as Error).message || "取播放地址失败"); setWaiting(false); } });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, curId, curEp, proxyRetry, allowed, permissionKey, requestPlay]);
@@ -518,7 +521,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
   /* 切换条目/集数时重置播放状态 */
   useEffect(() => {
-    setDuration(0); setErr(""); setWaiting(true); setPaused(false);
+    setDuration(0); setErr(""); setWaiting(true); setPaused(false); setLoadingStatus("");
     setPlayingKey("");
     playbackClock.publish(0);
     setPortraitFit("contain");
@@ -1086,6 +1089,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                   onPlaying={() => { if (isCurrentPlayback()) { setPaused(false); setWaiting(false); setErr(""); setPlayingKey(playKey); } }}
                   onPause={() => { if (isCurrentPlayback()) setPaused(true); }}
                   onWaiting={() => { if (isCurrentPlayback()) setWaiting(true); }}
+                  onLoadingStatus={message => { if (isCurrentPlayback()) setLoadingStatus(message); }}
                   onEnded={() => { if (!isCurrentPlayback()) return; const next = episodes.find((e) => e.ep_num === curEp + 1); if (next) pickEp(next.ep_num); }}
                   onError={(m) => {
                     if (!isCurrentPlayback()) return;
@@ -1376,22 +1380,13 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                   </span>
                 </div>
               )}
-              {isActive && waiting && !err && !paused && (
-                <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none"><Loader className="w-9 h-9 spinner" /></div>
-              )}
-              {isActive && err && (
-                <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
-                  <div className="rounded-xl p-5 flex flex-col items-center gap-3 text-[14px] hg-ink-2 pointer-events-auto" style={{ background: "rgba(0,0,0,.7)" }}>
-                    <span>视频暂时无法加载</span>
-                    <span className="text-[12px] hg-ink-4 max-w-[240px] text-center break-all">{err}</span>
-                    <Button className="hg-link text-[14px]" onClick={() => {
-                      setErr(""); setWaiting(true);
-                      if (playUrl && videoRef.current) videoRef.current.retry();
-                      else setProxyRetry(value => value + 1);
-                    }}>重试</Button>
-                  </div>
-                </div>
-              )}
+              {isActive && active && <PlaybackFeedback error={err} waiting={(waiting && !paused) || !!loadingStatus} status={loadingStatus}
+                onLogin={() => setLoginOpen(true)} onNetwork={() => store.push({ kind: "settings", section: "网络" })}
+                onRetry={() => {
+                  setErr(""); setWaiting(true);
+                  if (playUrl && videoRef.current) videoRef.current.retry();
+                  else setProxyRetry(value => value + 1);
+                }} />}
             </section>
           );
         })}

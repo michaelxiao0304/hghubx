@@ -28,7 +28,7 @@ export type Page =
   | FeedContext
   | { kind: "channel"; key: string; cate: string; name: string }
   | { kind: "ranks"; key: string }
-  | { kind: "settings"; key: string; section?: "内容偏好" }
+  | { kind: "settings"; key: string; section?: "内容偏好" | "网络" }
   | { kind: "posts"; key: string }
   | { kind: "post"; key: string; id: number }
   | { kind: "topics"; key: string }
@@ -42,7 +42,7 @@ export type PageInput =
   | { kind: "feed"; videoIds: number[]; index: number; title: string; source?: string; feedKind?: "video" | "post"; startEp?: number; startTime?: number }
   | { kind: "channel"; cate: string; name: string }
   | { kind: "ranks" }
-  | { kind: "settings"; section?: "内容偏好" }
+  | { kind: "settings"; section?: "内容偏好" | "网络" }
   | { kind: "posts" }
   | { kind: "post"; id: number }
   | { kind: "topics" }

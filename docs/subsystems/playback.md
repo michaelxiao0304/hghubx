@@ -26,6 +26,9 @@
   `createHlsRecovery`；[`playbackClock.ts`](../../src/features/playback/playbackClock.ts)
   的 `createPlaybackClock`；[`usePlaybackActivity.ts`](../../src/features/playback/usePlaybackActivity.ts)、
   [`useProxyPlaybackRecovery.ts`](../../src/features/playback/useProxyPlaybackRecovery.ts)。
+- 加载反馈：[`usePlaybackWatchdog.ts`](../../src/features/playback/usePlaybackWatchdog.ts)、
+  [`PlaybackFeedback.tsx`](../../src/features/playback/PlaybackFeedback.tsx)、
+  [`playbackRequest.ts`](../../src/features/playback/playbackRequest.ts)。
 - 输入与传输：[`useSeekInput.ts`](../../src/features/playback/useSeekInput.ts)、
   [`useInlinePlayerFullscreen.tsx`](../../src/features/playback/useInlinePlayerFullscreen.tsx)、
   [`mediaTransport.ts`](../../src/features/playback/mediaTransport.ts)、
@@ -48,7 +51,7 @@
    `127.0.0.1` 的 `/hls`/`/seg` 路由；Linux 的 `LOCAL` 固定为
    `http://127.0.0.1:17650`，由 GStreamer 直接取 HLS。
 3. hls.js 使用 `autoStartLoad: false`，在 `MANIFEST_PARSED` 后按
-   `startPosition`/`resume` 调 `startLoad`。`FRAG_BUFFERED` 清空恢复计数和错误；
+   `startPosition`/`resume` 调 `startLoad`。`FRAG_BUFFERED` 清空 HLS 恢复计数，实际 `playing` 清空错误；
    `ERROR` 只把 fatal network/media 交给 `createHlsRecovery`。
 4. `usePlaybackActivity` 在页面失活时暂停并 `stopLoad()`，在重新激活时按
    `wanted` 恢复；`play()` 的 Promise 返回后会再次检查页面是否仍激活。
@@ -88,8 +91,16 @@
   的横拖定位/上下划切集/长按换挡与锁定都先经 `stageXY` 把屏幕坐标换算回舞台坐标
   （rotate(90deg)：舞台 dx=屏幕 dy、舞台 dy=-屏幕 dx），全屏 overlay 的 touch-action
   固定为 none，避免原生 pan-y 把视觉横滑取消掉。
-- 媒体错误：hls fatal 显示 `type/details/status`，原生错误走
-  `mediaErrorMessage`；手动重试走同一个 `useProxyPlaybackRecovery` 路径。
+- 媒体错误：HLS fatal 按 HTTP 状态与网络/解码类型显示固定中文提示，不展示原始响应、
+  reason 或带签名的 URL。片源 401/403 表示媒体访问被拒绝，不直接判定账号失效；
+  只有业务接口返回标准登录失效信息时，Feed 提示提供“重新登录”。
+- 持续加载：前台有播放意图且时钟没有前进时，8 秒提示加载较慢，20 秒重建同一视频连接；
+  最多重建 2 次，仍未前进则停止加载并显示可关闭的错误提示。原生网络错误（code 2）
+  使用同一重试预算，不必等待 20 秒；解码/不支持格式立即提示。实际播放时间前进才重置预算，
+  metadata/playing 事件本身不能刷新预算。暂停、失活、切后台和片尾不消耗超时等待时间。
+- 错误提示可收起为“查看播放错误”，提供手动重试；Feed 还可直接进入网络设置。
+  收起不清除错误、不重启自动恢复。手动重试走 `useProxyPlaybackRecovery`，
+  保留同一媒体元素、秒数、倍速，显式点击重试恢复播放意图；不修改收藏/片库格式。
 
 ## 约束与失败行为
 
@@ -105,14 +116,16 @@
   capability 提供 `/hls` 与 `/seg`；不支持 `/img`，也不把该端口暴露成通用代理。
 - Linux WebKitGTK 没有 MediaSource 时由 GStreamer 播 HLS；`linux_http` 绑定失败时
   播放会失败而不是静默切到自定义协议。端口必须和 `src/shared/api/api.ts` 的 `LOCAL` 常量一致。
-- 原生错误不会无限重试：`mediaErrorMessage` 只给用户可理解的
-  network/decode/unsupported 提示；手动重试通过 proxy retry 重建媒体连接。
+- HLS 自身的可恢复网络退避和 4 次 fatal 恢复仍保留；加载监测是独立兜底。
+  达到终止状态时停止媒体加载并销毁恢复队列，避免错误面板出现后仍后台无限请求。
+- 超时说明只描述可能的网络/片源原因，不能仅凭等待时间判断账号失效或网络断开。
+  浏览器原生 MediaError 通常没有 HTTP 状态，因此不能把原生网络错误细分为 HTTP 401。
 
 ## 验证命令
 
 ```sh
 pnpm build
-pnpm test:playback --scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,ios-native,recovery,review,tv
+pnpm test:playback --scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,feedback,ios-native,recovery,review,tv
 node scripts/test-ios-native-media.mjs
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
@@ -120,3 +133,5 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 `pnpm test:playback` 使用本地 HLS fixture，需要 FFmpeg 和 Chromium；它不能替代
 iOS WKWebView、Android WebView、Linux GStreamer 的实机矩阵。`test:ios-native-media`
 检查前端传输契约，不证明真机 AVFoundation 已通过。上述命令是验证入口，不代表本轮已经运行。
+`feedback` 检查真实 HLS 的 401/403 分类、业务登录入口/关闭和播放地址超时/迟到响应；
+`ios-native` 用可控时钟检查静默加载、有限重试、原生网络错误以及暂停/后台保护。
