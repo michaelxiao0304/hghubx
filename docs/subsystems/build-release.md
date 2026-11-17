@@ -5,6 +5,10 @@
 构建子系统负责前端打包、Tauri 桌面/移动构建、CI 门禁、版本字段同步、平台产物命名和 release
 workflow。它不负责产品功能；发布是维护者/CI 的动作，agent 不自行 tag 或上传 Release；用户明确授权的 fork 本地开发签名、打包和覆盖安装按根 AGENTS.md 执行。
 
+本 fork 的上游合并任务遵守 [AGENTS.md 的默认要求](../../AGENTS.md#合并源仓库的默认要求)：
+保护 fork 改动，解决冲突并通过测试后，实际构建和校验 Universal DMG 与 iOS IPA；默认只交付
+安装包，不安装到本机或手机。高风险操作先确认，历史安装授权不沿用。
+
 CI 签名密钥存于 GitHub Actions secrets；本地开发证书由用户的 Xcode/钥匙串管理。密钥、设备和团队身份不得进入仓库或诊断输出。
 
 ## 事实来源
