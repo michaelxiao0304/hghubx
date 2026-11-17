@@ -59,7 +59,7 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
 ## 状态转换
 
 - 条目切换：更新 `position`/`renderIndex` → 清理标签菜单和面板 → 重置播放 key →
-  按新 key 读取详情/标签 → 允许后才请求播放地址。
+  保存上一条实际播放进度 → 从当前片库读取新视频的集数和秒数 → 按新 key 读取详情/标签 → 允许后才请求播放地址。
 - 标签门：未读 → loading → `checked=true`（再按 `blockReason` 判断）或 `tagErrors`（显示重试）；
   启用过滤时依据结果放行媒体；设置或账号/线路变化会使旧键失效并重新判断。
 - 过滤结果：`effectiveVideoIds` 先按 `checked`/`tagErrors`/`blockReason` 过滤；
@@ -97,3 +97,5 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 `test:smoke` 当前包含 `api-loading`、`storage-migration`、`line-selection`、
 `diagnostic-copy`。浏览器 fixture 使用 mock Tauri IPC 且阻断外部请求，
 不能证明真实上游的正文结构或账号接口；真实接口变化需要另加网络隔离的 fixture 或手动验证。
+
+系统旋转与容器缩放不构成条目选择：布局校准固定当前内容 ID，并使旧滚动候选失效。续播入口和写入时机见 [播放契约](playback.md)。

@@ -16,7 +16,8 @@
 
 - Feed 调用方：[`src/features/feed/Feed.tsx`](../../src/features/feed/Feed.tsx) 中的
   `requestPlay`、`playKey`、`playGuard`、`isCurrentPlayback`、`onTimeTick`、
-  `onDurationTick`、`resumeRef`、`enterFs`/`exitFs`、`keepAlive`。
+  `onDurationTick`、`enterFs`/`exitFs`、`keepAlive`。
+- 观看进度：[`useWatchProgress.ts`](../../src/features/feed/useWatchProgress.ts)，按账号/视频记录当前访问的集数、待恢复秒数和已观察进度。
 - Feed 播放内核：[`src/features/playback/VideoSurface.tsx`](../../src/features/playback/VideoSurface.tsx)
   的 `VideoSurface`、`VideoHandle.seek`、`reportSize`、`handleVideoError`。
 - 内嵌播放器：[`src/features/playback/Player.tsx`](../../src/features/playback/Player.tsx)
@@ -57,10 +58,17 @@
    通知 hls `startLoad(target)`，写入 `currentTime`，原本在播放才续播。
 6. 播放时钟是外部 store：`onTime` 只 `publish` 时钟，进度组件
    `PlaybackProgress`/`PlaybackTime` 用 `useSyncExternalStore` 重绘，避免整个 Feed
-   每 250ms 重渲染。Feed 每 5 秒把观看进度通过 `addHistory` 落盘，卸载时再补一次。
+   每 250ms 重渲染。Feed 每 5 秒把实际观察到的观看进度通过 `addHistory` 落盘；切换视频/集数、页面失活和卸载时补存最新观察值。取得播放 URL 不写入默认第 1 集，避免未播放先覆盖已有进度。
 7. `hg:proxy-changed` 会触发 `useProxyPlaybackRecovery.retry`：保存
    `src/time/playing/rate`，增加 revision，在同一 `video` 元素上重建 HLS/原生媒体连接；
    收到 metadata/data 后恢复位置、倍速与播放意图，期间用户显式暂停则保持暂停。
+
+## 旋转与断点续播
+
+- 系统旋转只改变布局，不重新选择视频。视口事件取消待执行的 150ms 滚动切换；容器宽高改变时由 ResizeObserver 按当前内容位置重对齐。滚动回调先检查布局尺寸，回调执行前再检查尺寸和实际位置，旧回调不能切换收藏。
+- 布局校正使用统一的程序滚动标记；移除了切换条目后 120/350ms 的旧位置回拉，防止快速 A→B→A 被旧定时器覆盖。显式上下划或上一部/下一部仍能切换内容。
+- 每次进入视频默认从当前账号/游客观看记录选择集数和秒数，包括收藏、搜索、相关推荐和同一 Feed 内往返。显式 `startEp/startTime` 只用于首次入口；用户手动选集从所选集开头播放，返回该视频时使用最新记录。
+- metadata 就绪后恢复时间，片尾夹到 `duration - 0.15`；恢复前的零时间事件不覆盖保存的位置。清空历史或切换账号后，旧观察记录仍持有旧代次的 writer，不能靠卸载回填旧数据；只有新的实际播放观察才能使用新 writer。
 
 ## 状态转换
 
@@ -104,7 +112,7 @@
 
 ```sh
 pnpm build
-pnpm test:playback --scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,ios-native,recovery,review,tv
+pnpm test:playback --scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,ios-native,recovery,review,tv
 node scripts/test-ios-native-media.mjs
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```

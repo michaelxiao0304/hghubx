@@ -17,14 +17,14 @@ const scriptScenarios = {
 };
 const { values: args } = parseArgs({ options: {
   "media-dir": { type: "string" }, output: { type: "string" }, "browser-executable": { type: "string" },
-  scenarios: { type: "string", default: "seek,legacy,lifecycle,gesture,proxy,portrait-fit" }, help: { type: "boolean" },
+  scenarios: { type: "string", default: "seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume" }, help: { type: "boolean" },
 } });
 if (args.help) {
-  console.log("pnpm test:playback [--media-dir DIR] [--output NEW_DIR] [--browser-executable PATH] [--scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,ios-native,recovery,review,tv]");
+  console.log("pnpm test:playback [--media-dir DIR] [--output NEW_DIR] [--browser-executable PATH] [--scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,ios-native,recovery,review,tv]");
   process.exit(0);
 }
 const scenarios = args.scenarios.split(",");
-assert(scenarios.length && scenarios.every(s => ["seek", "legacy", "lifecycle", "gesture", "proxy", "portrait-fit", "ios-native", "recovery", "review", "tv"].includes(s)), "Unknown scenario");
+assert(scenarios.length && scenarios.every(s => ["seek", "legacy", "lifecycle", "gesture", "proxy", "portrait-fit", "rotation", "resume", "ios-native", "recovery", "review", "tv"].includes(s)), "Unknown scenario");
 const output = resolve(args.output || join(root, "test-results", "playback", new Date().toISOString().replace(/[:.]/g, "-")));
 await mkdir(dirname(output), { recursive: true });
 await mkdir(output); // Refuse to overwrite artifacts from an earlier run.
@@ -231,6 +231,91 @@ async function portraitFitChecks(page) {
   await page.waitForFunction(() => getComputedStyle(document.querySelector("video")).objectFit === "contain");
   return { viewport: "390x844", portrait_source: "360x640", portrait_object_fit: portrait.objectFit,
     landscape_default_fit: "contain", landscape_toggle: ["contain", "cover", "contain"] };
+}
+
+async function openLibrary(page) {
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem("library-seeded")) {
+      localStorage.setItem("hghubx_app_v1", JSON.stringify({ favs: [990, 991, 992], swipeEp: false,
+        history: [{ id: 991, ep: 2, t: 20, dur: 90, at: 123456 }] }));
+      sessionStorage.setItem("library-seeded", "1");
+    }
+    localStorage.setItem("hghubx_mobile_hold_guide_v1", "1");
+    localStorage.setItem("hghubx_swipe_ep_v2", "1");
+    window.__TAURI_INTERNALS__ = { invoke: async () => undefined };
+  });
+  await page.goto(`${report.ui}/tests/player-seek.html?diagnostics=1&library=1&proxy=${encodeURIComponent(report.media)}`);
+  await page.getByRole("button", { name: "Library 991", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("video")?.currentTime > 0);
+}
+async function waitMedia(page, id, ep) {
+  await page.waitForFunction(({ id, ep }) => {
+    const media = window.playerSeekFixture.currentMedia();
+    return Number(media.video) === id && (ep === undefined || Number(media.episode) === ep)
+      && document.querySelector("video")?.readyState >= 2;
+  }, { id, ep });
+}
+async function rotationChecks(page) {
+  await openLibrary(page);
+  await waitMedia(page, 991);
+  await page.locator("video").evaluate(v => { v.currentTime = 12; window.rotationVideo = v; });
+  // WebKit can deliver a scroll at the resized height before orientation/resize.
+  // Queue the old handler's 150ms candidate, then rotate while A is still active.
+  await page.evaluate(() => {
+    const box = document.querySelector(".player-root .overflow-y-scroll");
+    box.style.height = "390px"; box.style.bottom = "auto";
+    box.scrollTop = 780; box.dispatchEvent(new Event("scroll", { bubbles: true }));
+    window.dispatchEvent(new Event("orientationchange"));
+  });
+  await page.setViewportSize({ width: 844, height: 390 });
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(() => Number(window.playerSeekFixture.currentMedia().video)), 991, "Rotation must not commit a stale scroll candidate for another favorite");
+  assert(await page.evaluate(() => document.querySelector("video") === window.rotationVideo), "Rotation keeps the active video element");
+  assert(await page.locator("video").evaluate(v => v.currentTime >= 11), "Rotation keeps playback position");
+  await page.evaluate(() => { const box = document.querySelector(".player-root .no-bar"); box.style.height = ""; box.style.bottom = ""; });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(() => Number(window.playerSeekFixture.currentMedia().video)), 991);
+  return { favorite: 991, stale_scroll_cancelled: true, same_video: true, portrait_return: true };
+}
+async function resumeChecks(page) {
+  await openLibrary(page);
+  await waitMedia(page, 991);
+  assert.equal(await page.evaluate(() => Number(window.playerSeekFixture.currentMedia().episode)), 2, "Favorites entry must resume the saved episode");
+  await page.waitForFunction(() => document.querySelector("video")?.currentTime >= 19);
+  for (const ep of [1, 2]) {
+    await page.getByRole("button", { name: "视频详情", exact: true }).click();
+    await page.getByRole("button", { name: "选集", exact: true }).click();
+    await page.getByRole("button", { name: String(ep), exact: true }).click();
+    await waitMedia(page, 991, ep);
+    assert(await page.locator("video").evaluate(v => v.currentTime < 3), "Explicit episode selection starts that episode, without reapplying an old resume");
+  }
+  await page.waitForFunction(() => window.libraryStore.history.some(row => row.id === 991 && row.ep === 2 && row.t > 0 && row.t < 3));
+  // Switch before the five-second save interval, with a new unsaved observation.
+  await page.locator("video").evaluate(v => { v.pause(); v.currentTime = 37; v.dispatchEvent(new Event("timeupdate")); });
+  assert(await page.evaluate(() => window.libraryStore.history.find(row => row.id === 991).t < 3), "The last seek is not yet saved by the interval");
+  await page.evaluate(() => { const b = document.querySelector(".player-root .overflow-y-scroll"); b.scrollTop = b.clientHeight * 2; b.dispatchEvent(new Event("scroll", { bubbles: true })); });
+  await waitMedia(page, 992, 1);
+  await page.evaluate(() => { const b = document.querySelector(".player-root .overflow-y-scroll"); b.scrollTop = b.clientHeight; b.dispatchEvent(new Event("scroll", { bubbles: true })); });
+  await waitMedia(page, 991, 2);
+  await page.waitForFunction(() => document.querySelector("video")?.currentTime >= 36);
+  assert(await page.locator("video").evaluate(v => v.currentTime < 40), "A resumes its own last observed seconds");
+  // Pop/unmount, visit B from favorites, then reopen A; exercise real Profile links.
+  await page.evaluate(() => window.libraryStore.pop());
+  await page.getByRole("button", { name: "Library 992", exact: true }).click();
+  await waitMedia(page, 992, 1);
+  await page.evaluate(() => window.libraryStore.pop());
+  await page.getByRole("button", { name: "Library 991", exact: true }).click();
+  await waitMedia(page, 991, 2);
+  await page.waitForFunction(() => document.querySelector("video")?.currentTime >= 36);
+  await page.reload();
+  await page.getByRole("button", { name: "Library 991", exact: true }).click();
+  await waitMedia(page, 991, 2);
+  await page.waitForFunction(() => document.querySelector("video")?.currentTime >= 36);
+  await page.locator("video").evaluate(v => v.pause());
+  await page.evaluate(async () => { await window.libraryStore.clearHistory(); window.libraryStore.pop(); });
+  assert.deepEqual(await page.evaluate(() => window.libraryStore.history), [], "Old player cleanup cannot restore explicitly cleared history");
+  return { episode: 2, seconds: 37, same_feed: true, favorites_reentry: true, restart: true };
 }
 
 async function seekChecks(page, legacy) {
@@ -620,8 +705,8 @@ try {
       }
       continue;
     }
-    const mobileContext = name === "gesture" || name === "portrait-fit";
-    const context = await browser.newContext({ ...(mobileContext ? {userAgent:"Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_1 like Mac OS X) AppleWebKit/605.1.15 Version/17.1 Mobile/15E148 Safari/604.1",hasTouch:true} : {}), viewport: name === "portrait-fit" ? { width: 390, height: 844 } : { width: 1000, height: 900 } });
+    const mobileContext = ["gesture", "portrait-fit", "rotation", "resume"].includes(name);
+    const context = await browser.newContext({ ...(mobileContext ? {userAgent:"Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_1 like Mac OS X) AppleWebKit/605.1.15 Version/17.1 Mobile/15E148 Safari/604.1",hasTouch:true} : {}), viewport: ["portrait-fit", "rotation", "resume"].includes(name) ? { width: 390, height: 844 } : { width: 1000, height: 900 } });
     await context.exposeBinding("collectPlaybackLogs", (_source, entries) => {
       for (const e of entries) jsonl(join(dir, "playback.jsonl"), { ts: e.data.at, event: `web.${e.event}`, data: e.data, transport: "browser-fixture" });
     });
@@ -658,7 +743,7 @@ try {
         console.log(`PASS ${name}: ${JSON.stringify(result.metrics)}`);
         continue;
       }
-      const action = name === "recovery" ? explicitRecoveryCheck(page) : name === "proxy" ? proxyRecoveryCheck(page) : name === "gesture" ? gestureChecks(page) : name === "portrait-fit" ? portraitFitChecks(page) : name === "seek" || name === "legacy" ? seekChecks(page, name === "legacy") : lifecycleCheck(page);
+      const action = name === "rotation" ? rotationChecks(page) : name === "resume" ? resumeChecks(page) : name === "recovery" ? explicitRecoveryCheck(page) : name === "proxy" ? proxyRecoveryCheck(page) : name === "gesture" ? gestureChecks(page) : name === "portrait-fit" ? portraitFitChecks(page) : name === "seek" || name === "legacy" ? seekChecks(page, name === "legacy") : lifecycleCheck(page);
       result.metrics = await Promise.race([action, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Scenario exceeded 45 seconds")), 45000); })]);
       assert.deepEqual(pageErrors, [], "Browser script errors");
       assert.deepEqual(externalRequests, [], "Unexpected external network requests");

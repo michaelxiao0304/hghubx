@@ -19,10 +19,11 @@
 | 2026-11-17 | 播放测试前置条件 | 手势测试等待播放超时；失活后延迟挂载测试等不到播放器 | 首次长按教程会暂停播放；失活的 Feed 不请求播放地址，因此没有挂载播放器 | 手势测试先点击真实教程确认按钮；延迟挂载用真实 VideoSurface/Player，先确认父页面失活且无 video，再挂载并检查无播放/分片请求，激活后确认可播 | [Playback 43952408893](https://github.com/zxsos/HGhubX/actions/runs/43952408893)；`scripts/test-playback.mjs`、`tests/player-seek.tsx` |
 | 2026-11-17 | 冷启动与返回键 | 启动动画期间提前挂载 App 后，从视频页按返回不弹栈；真机上动画期返回可能直接退出应用 | App 与启动动画同时注册 `back-button`；旧 fixture 只保留最后注册者且 `remove_listener` 是 no-op，动画卸载后返回仍打在已完成的动画回调上 | 覆盖层期间用 `holdBackForStartup()` 让 `runBack()` 只消费不导航；fixture 按真实 Tauri 建模多监听广播与按 channelId 注销；动画结束后恢复原有返回顺序 | `4dd7844`；`src/shared/lib/back.ts`、`src/app/startup/LaunchAnimation.tsx`、`scripts/fixtures/app-ui.mjs`；`scripts/test-inplace-search-back.mjs` |
 | 2026-11-17 | 切线掉登录（#145） | 手动/自动切换线路后登录被清空，需重新登录；`.ai` 线路接口全 404 | 上游可信线路共享同一账号库（实测同 uid、token 跨线可用、收藏一致），但客户端切线一律 `session.clear()` + 前端 `setUser(null)`；`.ai` 只是导航站却被列为固定线路 | 会话跨 origin 只能走 `rebase_or_clear()`（两端都是固定/发布页确认镜像才保留，revision 递增落盘）；自定义线路永远清空；前端由 boot 决定会话，本地账号桶随 rebase 迁移并立即落盘；导航站不授予线路与凭据信任 | `12f1968`..`c5f6091`；`src-tauri/src/session.rs` rebase 测试；`scripts/test-line-selection.mjs`、`scripts/test-network-settings.mjs`；实测记录 `outputs/issue-145/evidence/live-login-test.json` |
-
-
 | 2026-11-18 | fork 同步与可信切线 | 合并检查发现目标桶已存在时会丢弃源桶；过期状态可能被 boot 当成重新登录清除 | 上游迁移假设目标桶可由服务端补齐，与本机秒级进度和 fork 401 状态冲突 | 原生 boot 确认后合并并原子保存别名，旧桶保留为快照；普通同 ID 登录保持隔离；切线不解除 401，回切不恢复已删除记录 | `src/shared/storage/accountRebase.ts`、`accountData.ts`；既有 storage-migration/session-expiry 用例适配 |
 | 2026-11-18 | 并发迁移 fixture | Rust 完整回归偶发读到其他用例写入的 line.json | 临时目录仅用系统时间戳，时钟精度不足时并发撞名 | 用进程内序号补充时间戳，并用 create_dir 拒绝已有目录；不调整迁移生产规则 | `src-tauri/src/source_migration.rs` 的 Directory fixture；修复后 110 passed / 4 ignored |
+
+| 2026-11-18 | 旋转切错收藏 | 手机横置后当前 A 变为 B 并从头播放 | 旋转缩短容器高度后旧 scroll 事件算出另一索引，150ms 回调未取消；旧延迟校正还会回拉快速往返 | 尺寸变化只按当前内容校正，取消旧候选，执行前验证尺寸/位置；不保留跨条目的延迟回拉 | `src/features/feed/Feed.tsx`；`test-playback --scenarios rotation` 修复前 992 != 991、修复后通过 |
+| 2026-11-18 | 收藏与切剧不续播 | A 第 2 集切到 B 再回 A 从第 1 集/开头播放 | 收藏入口不传历史，Feed 只恢复初次显式参数，切剧前的未节流进度没有补存 | 统一按访问视频读取当前片库，切换/失活/卸载补存；实际播放后才更新历史；手动选集仍从开头播放 | `src/features/feed/useWatchProgress.ts`；`test-playback --scenarios resume` 修复前 1 != 2，覆盖同列表往返、收藏再进入及刷新 |
 
 新回归的追加方式：
 

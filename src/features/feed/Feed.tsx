@@ -2,6 +2,7 @@ import { Button, Image, SegmentedControl } from "../../shared/ui/ios/controls";
 import { Loader } from "../../shared/ui/ios/effects";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useWatchProgress } from "./useWatchProgress";
 import { useFsOrientation } from "../playback/useFsOrientation";
 import { api, cover, fmt, fmtTime, isMobile, logLine } from "../../shared/api/api";
 import type { Detail, Episode, PlayInfo, Post, VideoCard } from "../../shared/api/types";
@@ -101,7 +102,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     if (id !== undefined) setPosition({ id, index: next });
   }, []);
   const [renderIndex, setRenderIndex] = useState(startIndex);
-  const [epMap, setEpMap] = useState<Record<number, number>>(() => (startEp ? { [videoIds[startIndex]]: startEp } : {}));
   const [playUrls, setPlayUrls] = useState<Record<string, string>>({});
   const [hevcUrls, setHevcUrls] = useState<Record<string, string>>({});
   const [playingKey, setPlayingKey] = useState("");
@@ -117,14 +117,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const [waiting, setWaiting] = useState(false);
   const [err, setErr] = useState("");
   const [panel, setPanel] = useState<"episodes" | "comments" | "article" | "detail" | null>(null);
-  /* 续播：拿到时长后再 seek 一次（只对进入时那一条生效） */
-  const resumeRef = useRef<{ key: string; t: number } | null>(
-    startTime && startTime > 1 ? { key: `${videoIds[startIndex]}:${startEp || 1}`, t: startTime } : null,
-  );
-  /* 观看进度：onTime 里节流写回 store，卸载时再兜一次 */
-  const liveRef = useRef({ id: 0, ep: 1, dur: 0, t: 0, permissionKey: "", accountScope: "" });
-  const historyWriter = useRef(addHistory);
-  const lastSaveRef = useRef(0);
   const theater = store.theater;
   const setTheater = store.setTheater;
   const fs = store.fs;
@@ -160,6 +152,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const [vpLandscape, setVpLandscape] = useState(
     () => typeof window !== "undefined" && window.innerWidth > window.innerHeight,
   );
+  const viewportLandscape = useRef(vpLandscape);
   /* 进出全屏过渡期多次续播，防止 iOS 把播放打断 */
   const keepAliveTimers = useRef<number[]>([]);
   /* 双指缩放：scale 1~4，平移跟手指 */
@@ -187,7 +180,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   useEffect(() => { setTagMenu(false); }, [curId, store.lineEpoch, accountScope]);
   useEffect(() => { if (blocked && mode === "home" && active) onBlocked?.(curId); }, [blocked, mode, active, curId, onBlocked]);
   useEffect(() => { if (!allowed) { setPanel(null); setTagMenu(false); } }, [allowed]);
-  const curEp = epMap[curId] || 1;
+  const progress = useWatchProgress({ id: curId, scope: accountScope, enabled: kind === "video", active: active && allowed,
+    history: store.history, save: addHistory, initialId: videoIds[startIndex], startEp, startTime, video: videoRef });
+  const curEp = progress.episode;
   const liked = isLiked(curId, curEp, kind);
   const collected = isFav(curId, kind);
   const likeActionKey = `like:${kind}:${curId}:${curEp}`;
@@ -198,14 +193,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const followPending = actionPending(followActionKey);
   const actionContext = useRef({ accountScope, lineEpoch: store.lineEpoch, id: curId, ep: curEp, kind });
   actionContext.current = { accountScope, lineEpoch: store.lineEpoch, id: curId, ep: curEp, kind };
-  const progressScope = useRef(accountScope);
-  useLayoutEffect(() => {
-    if (progressScope.current === accountScope) return;
-    progressScope.current = accountScope;
-    resumeRef.current = null;
-    lastSaveRef.current = 0;
-    liveRef.current = { id: 0, ep: 1, dur: 0, t: 0, permissionKey: "", accountScope };
-  }, [accountScope]);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const pendingActions = useRef(new Set<string>());
@@ -238,31 +225,15 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const episodes = detail?.episodes || [];
   const post = posts[curId];
 
-  /* 观看进度：onTime 里每 5 秒落一次；退出播放页时再用 liveRef 兜一次 */
   const onTimeTick = (t: number) => {
     if (!isCurrentPlayback()) return;
-    // Keep the writer from this observation; a later clear must invalidate old cleanup data.
-    if (active) historyWriter.current = addHistory;
-    liveRef.current = { id: curId, ep: curEp, dur: duration, t, permissionKey, accountScope };
+    progress.onTime(t);
     playbackClock.publish(t);
-    const now = Date.now();
-    if (duration > 0 && now - lastSaveRef.current > 5000) {
-      lastSaveRef.current = now;
-      if (kind === "video" && active) addHistory(curId, curEp, t, duration);
-    }
   };
-
-  /* 拿到时长后再续播：只对进入时那一条生效，且不跳到片尾 */
   const onDurationTick = (d: number) => {
     if (!isCurrentPlayback()) return;
     setDuration(d);
-    liveRef.current = { id: curId, ep: curEp, dur: d, t: historyWriter.current === addHistory && liveRef.current.id === curId && liveRef.current.ep === curEp && liveRef.current.accountScope === accountScope ? liveRef.current.t : 0, permissionKey, accountScope };
-    const r = resumeRef.current;
-    if (r && r.key === playKey && r.t > 1 && (!d || r.t < d - 3)) {
-      resumeRef.current = null;
-      videoRef.current?.seek(r.t, "history_resume");
-      playbackClock.publish(r.t);
-    }
+    progress.onDuration(d);
   };
 
   /** 统一视图模型：短剧与吃瓜帖子共用同一套播放界面 */
@@ -320,22 +291,31 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const idxRef = useRef(index);
   idxRef.current = index;
   const anchoredScroll = useRef<number | null>(null);
+  const swipeTimer = useRef(0);
+  const scrollGeometry = useRef({ width: 0, height: 0 });
+  const alignScroll = useCallback(() => {
+    window.clearTimeout(swipeTimer.current);
+    const box = boxRef.current;
+    if (!box) return;
+    scrollGeometry.current = { width: box.clientWidth, height: box.clientHeight };
+    const top = fs ? 0 : Math.max(0, index) * box.clientHeight;
+    anchoredScroll.current = top;
+    box.scrollTop = top;
+  }, [fs, index]);
   useLayoutEffect(() => {
     const id = effectiveVideoIds[index];
     if (id !== undefined && (position.id !== id || position.index !== index)) {
       setPosition({ id, index }); setRenderIndex(index);
     }
-    // The scroll container is recreated after the tag gate/one-time prompt.
-    // Anchor by content ID before paint, including a nonzero starting position.
-    if (boxRef.current) {
-      const top = index * (boxRef.current.clientHeight || 1);
-      if (Math.abs(boxRef.current.scrollTop - top) > 1) {
-        anchoredScroll.current = top;
-        boxRef.current.scrollTop = top;
-      }
-    }
-  }, [effectiveVideoIds, index, position.id, position.index, allowed]);
-  const swipeTimer = useRef(0);
+    alignScroll();
+    const box = boxRef.current;
+    if (!box) return;
+    const observer = new ResizeObserver(() => {
+      if (box.clientHeight !== scrollGeometry.current.height || box.clientWidth !== scrollGeometry.current.width) alignScroll();
+    });
+    observer.observe(box);
+    return () => { observer.disconnect(); window.clearTimeout(swipeTimer.current); };
+  }, [effectiveVideoIds, index, position.id, position.index, allowed, alignScroll]);
 
   const resolveSwipe = useCallback((target: number) => {
     const prev = idxRef.current;
@@ -349,6 +329,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     if (fs || pinchRef.current) return;
     const el = boxRef.current;
     if (!el) return;
+    if (el.clientHeight !== scrollGeometry.current.height || el.clientWidth !== scrollGeometry.current.width) {
+      alignScroll(); return;
+    }
     if (anchoredScroll.current !== null) {
       const top = anchoredScroll.current;
       anchoredScroll.current = null;
@@ -359,8 +342,11 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     if (renderIndex !== i) setRenderIndex(i);
     if (onNearEnd && mode === "home" && i >= effectiveVideoIds.length - 3) onNearEnd();
     window.clearTimeout(swipeTimer.current);
-    swipeTimer.current = window.setTimeout(() => resolveSwipe(i), 150);
-  }, [effectiveVideoIds.length, onNearEnd, resolveSwipe, fs, mode, renderIndex]);
+    const width = el.clientWidth;
+    swipeTimer.current = window.setTimeout(() => {
+      if (el.clientHeight === h && el.clientWidth === width && Math.round(el.scrollTop / h) === i) resolveSwipe(i);
+    }, 150);
+  }, [effectiveVideoIds.length, onNearEnd, resolveSwipe, fs, mode, renderIndex, alignScroll]);
 
   const go = useCallback((delta: number) => {
     const el = boxRef.current;
@@ -373,21 +359,21 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
      桌面端键盘 ↑↓ 与右侧按钮都走这里，和移动端上下划手势保持一致。 */
   const stepDir = useCallback((dir: number) => {
     if (swipeEp && kind === "video") {
-      const ep = epMap[curId] || 1;
+      const ep = curEp;
       const total = episodes.length;
       const want = dir === 1 ? (total === 0 || ep < total ? ep + 1 : 0) : (ep > 1 ? ep - 1 : 0);
       if (want) {
-        setEpMap((m) => ({ ...m, [curId]: want }));
+        progress.pickEpisode(want);
         setPanel(null);
         return;
       }
     }
     go(dir);
-  }, [swipeEp, kind, epMap, curId, episodes.length, go]);
+  }, [swipeEp, kind, curEp, progress.pickEpisode, episodes.length, go]);
 
   const canStep = (dir: number) => {
     if (swipeEp && kind === "video") {
-      const ep = epMap[curId] || 1;
+      const ep = curEp;
       const total = episodes.length;
       if (dir === 1 ? (total === 0 || ep < total) : ep > 1) return true;
     }
@@ -466,7 +452,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         if (!streamUrl) throw new Error("暂无播放地址");
         setPlayUrls((m) => ({ ...m, [playKey]: streamUrl }));
         if (hevcStream) setHevcUrls((m) => ({ ...m, [playKey]: hevcStream }));
-        if (kind === "video") addHistory(curId, curEp);
       })
       .catch((e) => { if (alive) setErr((e as Error).message || "取播放地址失败"); });
     return () => { alive = false; };
@@ -477,7 +462,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   useEffect(() => {
     if (!active || !curId || kind !== "video" || !allowed || playingKey !== playKey || episodes.length === 0) return;
     let alive = true;
-    const ep = epMap[curId] || 1;
+    const ep = curEp;
     const nextEpisode = ep + 1;
     if (nextEpisode > episodes.length) return;
     const key = `${curId}:${nextEpisode}`;
@@ -544,15 +529,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   useEffect(() => { videoRef.current?.volume(volume); }, [volume]);
   /* 倍速同步（长按 2x / 锁定 2x / 基准倍速） */
   useEffect(() => { videoRef.current?.rate(effRate); }, [effRate, playKey]);
-
-  /* 离开播放页时把最后位置落盘 */
-  useEffect(() => () => {
-    const s = liveRef.current;
-    if (kind === "video" && s.id && s.dur && playGuard.current.allowed && playGuard.current.id === s.id
-      && actionContext.current.accountScope === s.accountScope
-      && playGuard.current.playKey === `${s.id}:${s.ep}` && playGuard.current.permissionKey === s.permissionKey) historyWriter.current(s.id, s.ep, s.t, s.dur);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   /* 键盘 */
   useEffect(() => {
@@ -761,11 +737,11 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       const dx2 = ux - g.x;
       if (Math.abs(dy) > 56 && Math.abs(dy) > Math.abs(dx2)) {
         const dir = dy < 0 ? 1 : -1;
-        const ep = epMap[curId] || 1;
+        const ep = curEp;
         const total = episodes.length;
         const want = dir === 1 ? (total === 0 || ep < total ? ep + 1 : 0) : (ep > 1 ? ep - 1 : 0);
         if (swipeEp && kind === "video" && want) {
-          setEpMap((m) => ({ ...m, [curId]: want }));
+          progress.pickEpisode(want);
           toast(`第 ${want}集${total ? ` / ${total}` : ""}`, "info");
           try { navigator.vibrate?.(12); } catch { /* ignore */ }
           return;
@@ -875,15 +851,12 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   useEffect(() => {
     if (isDesktop) return undefined;
     const onViewportChange = () => {
+      window.clearTimeout(swipeTimer.current);
       const isLand = window.innerWidth > window.innerHeight;
-      setVpLandscape((prev) => {
-        if (prev !== isLand && active) {
-          setFs(isLand);
-          keepAlive();
-          wake();
-        }
-        return isLand;
-      });
+      const changed = viewportLandscape.current !== isLand;
+      viewportLandscape.current = isLand;
+      setVpLandscape(isLand);
+      if (changed && active) { setFs(isLand); keepAlive(); wake(); }
     };
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("orientationchange", onViewportChange);
@@ -892,33 +865,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       window.removeEventListener("orientationchange", onViewportChange);
     };
   }, [isDesktop, active, setFs, keepAlive, wake]);
-
-  /* 全屏切换或视口旋转后校准滚动容器 scrollTop：
-     - 进入全屏时非当前项已隐藏，当前项位于顶部 scrollTop = 0；
-     - 退出全屏回到竖屏列表时，立即把 scrollTop 对齐到 index * clientHeight，
-       防止错位到其它视频封面（「横屏播放变成别的剧集」的根因）。 */
-  useEffect(() => {
-    const el = boxRef.current;
-    if (!el) return undefined;
-    if (fs) {
-      el.scrollTop = 0;
-      return undefined;
-    }
-    const syncScroll = () => {
-      const box = boxRef.current;
-      if (!box || fs) return;
-      box.scrollTop = index * (box.clientHeight || 1);
-    };
-    syncScroll();
-    const raf = requestAnimationFrame(syncScroll);
-    const t1 = window.setTimeout(syncScroll, 120);
-    const t2 = window.setTimeout(syncScroll, 350);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-    };
-  }, [fs, vpLandscape, index]);
 
   useEffect(() => () => {
     for (const t of keepAliveTimers.current) window.clearTimeout(t);
@@ -1036,7 +982,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   };
 
   const pickEp = (ep: number) => {
-    setEpMap((m) => ({ ...m, [curId]: ep }));
+    progress.pickEpisode(ep);
     setPanel(null);
   };
 

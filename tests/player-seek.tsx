@@ -1,12 +1,13 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Feed } from "../src/features/feed";
-import { AppProvider } from "../src/shared/model/store";
+import { AppProvider, useStore } from "../src/shared/model/store";
 import { api } from "../src/shared/api/api";
 import "../src/index.css";
 import { flushPlaybackLog, initPlaybackLog, playbackLogApi, setPlaybackLog } from "../src/shared/diagnostics/playbackDiagnostics";
 import Settings from "../src/features/settings/Settings";
 import Hls from "hls.js";
+import Profile from "../src/features/account/Profile";
 import { Player, VideoSurface } from "../src/features/playback";
 
 // 仅将自定义媒体协议映射到本地测试服务器；播放器、HLS 和鼠标事件均使用真实实现。
@@ -40,6 +41,11 @@ const fixture = {
     fatal: true,
     error: new Error("fixture media failure"),
   }),
+  currentMedia: () => {
+    const source = testHls?.url;
+    const target = source && new URL(source).searchParams.get("u");
+    return target ? Object.fromEntries(new URL(target).searchParams) : {};
+  },
   engineState: () => ({ loading: testHls?.loadingEnabled, buffering: testHls?.bufferingEnabled, levels: testHls?.levels.length }),
 };
 let testHls: Hls | undefined;
@@ -49,6 +55,7 @@ const initiallyInactive = new URLSearchParams(location.search).has("inactive");
 const delayedMount = new URLSearchParams(location.search).has("delayed-mount");
 // issue #142 fit 回归：手机竖屏视口下按真实视口尺寸铺满播放面，
 // 并跳过仅桌面端会成立的闲置进度条命中测试（移动端没有 .player-root.is-idle）。
+const libraryTest = new URLSearchParams(location.search).has("library");
 const portraitFitTest = new URLSearchParams(location.search).has("portrait-fit");
 if (diagnosticTest) {
   // Test-only handle: exercise the real engine's public API without rewriting production modules.
@@ -87,17 +94,28 @@ document.addEventListener("seeking", (e) => {
 }, true);
 window.addEventListener("error", (e) => fixture.errors.push(e.message));
 api.boot = async () => ({ user: null, logged_in: false, base: "https://fixture.invalid", strict_security: true });
-api.play = async () => {
+api.play = async (id, ep = 1) => {
   if (fixture.rejectPlaybackApi) throw new Error("fixture playback API unavailable");
-  return { id: 991, ep_num: 1, title: "Seek fixture", duration: 90, video_url: "https://media.fixture.invalid/list.m3u8" };
+  return { id: 991, ep_num: 1, title: "Seek fixture", duration: 90, video_url: libraryTest ? `https://media.fixture.invalid/list.m3u8?video=${id}&episode=${ep}` : "https://media.fixture.invalid/list.m3u8" };
 };
-api.video = async () => ({
-  id: 991, title: "Seek fixture", description: "", cover: "", tags: [], score: 0,
-  episode_count: 1, total_episodes: 1,
-  episodes: [{ ep_num: 1, title: "one", duration: 90, status: 1 }],
+api.video = async (id) => ({
+  id, title: libraryTest ? `Library ${id}` : "Seek fixture", description: "", cover: "", tags: [], score: 0,
+  episode_count: libraryTest ? 3 : 1, total_episodes: libraryTest ? 3 : 1,
+  episodes: (libraryTest ? [1, 2, 3] : [1]).map(ep_num => ({ ep_num, title: String(ep_num), duration: 90, status: 1 })),
   counts: { like: 0, collect: 0, comment: 0, hot: 0 },
   author: { id: 1, name: "Fixture" }, is_finished: true, is_original: 0,
 });
+function LibraryFixture() {
+  const store = useStore();
+  useEffect(() => { Object.assign(window, { libraryStore: store }); }, [store]);
+  return <div className="plat-ios" style={{ position: "absolute", inset: 0 }}>
+    {!store.stack.length && <Profile wide={false} />}
+    {store.stack.map((page, index) => page.kind === "feed" && <Feed key={page.key}
+      videoIds={page.videoIds} startIndex={page.index} startEp={page.startEp} startTime={page.startTime}
+      title={page.title} mode="context" active={index === store.stack.length - 1}
+      bottomInset={0} onBack={store.pop} />)}
+  </div>;
+}
 function Fixture() {
   const [active, setActive] = useState(!initiallyInactive);
   const [mounted, setMounted] = useState(!delayedMount);
@@ -119,7 +137,7 @@ function Fixture() {
     {settings && <div style={{ position: "relative", width: 900, height: 700 }}><Settings onBack={() => setSettings(false)} wide /></div>}
   </AppProvider>;
 }
-createRoot(document.querySelector("#root")!).render(<Fixture />);
+createRoot(document.querySelector("#root")!).render(libraryTest ? <AppProvider><LibraryFixture /></AppProvider> : <Fixture />);
 
 // 自动检查真正的浏览器命中测试，而非仅匹配 CSS 字符串。
 async function checkIdleSeekTarget() {
@@ -139,7 +157,7 @@ async function checkIdleSeekTarget() {
   }
   throw new Error("等待播放或控制条隐藏超时");
 }
-if (!legacyTest && !initiallyInactive && !delayedMount && !portraitFitTest) void checkIdleSeekTarget().catch((error) => {
+if (!legacyTest && !initiallyInactive && !delayedMount && !portraitFitTest && !libraryTest) void checkIdleSeekTarget().catch((error) => {
   fixture.errors.push(String(error));
   document.querySelector("#results")!.textContent = JSON.stringify({ passed: 0, failed: 1, error: String(error) });
 });
