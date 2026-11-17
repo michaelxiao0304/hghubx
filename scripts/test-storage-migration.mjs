@@ -15,6 +15,8 @@ const state = {
   searchHist: ["保留搜索记录"], volume: 0.42, muted: false,
   muteOnStartup: false, swipeEp: false, preferHevc: true,
 };
+// 迁移会为新字段补默认值（#146-3 全屏闲置隐藏秒数）：旧种子不带该字段，落盘应补齐。
+const migrated = { ...state, fsIdleSecs: 3 };
 const oldData = {
   hghub_app_v1: JSON.stringify(state), hghub_swipe_ep_v2: "1", hghub_theme: "light",
 };
@@ -46,7 +48,7 @@ try {
       }
       window.accountMigrationFixture = { offline: false, hold: false, pending: [], calls: [] };
       Object.assign(window, { __TAURI_INTERNALS__: { async invoke(command, args = {}) {
-        if (command === "app_boot") return { strict_security: true };
+        if (command === "app_boot") return { strict_security: true, ...window.accountMigrationFixture.boot };
         if (command === "debug_log" || command === "playback_log_write") return;
         const account = window.accountMigrationFixture;
         if (command === "api_logout") return { ok: true };
@@ -92,13 +94,13 @@ try {
 
   {
     const { context, page } = await open(oldData);
-    assert.deepEqual(await snapshot(page), { ...state, theme: "light" });
+    assert.deepEqual(await snapshot(page), { ...migrated, theme: "light" });
     assert.equal(await page.evaluate(() => window.storageMigrationFixture.getThemePreference()), "light");
     assert.equal(await page.evaluate(() => window.initialTheme), true);
     const saved = await storage(page);
     assert.equal(saved.hghub_app_v1, oldData.hghub_app_v1);
     assert.deepEqual(JSON.parse(saved.hghubx_library_backup_v2).originals, { hghub_app_v1: oldData.hghub_app_v1 });
-    assert.deepEqual(JSON.parse(saved.hghubx_app_v1), { ...state, _libraryMigration: 2 });
+    assert.deepEqual(JSON.parse(saved.hghubx_app_v1), { ...migrated, _libraryMigration: 2 });
     await page.evaluate(() => window.storageMigrationFixture.setTheme("system"));
     await page.waitForFunction(() => localStorage.getItem("hghubx_theme") === "system");
     await page.emulateMedia({ colorScheme: "dark" });
@@ -113,12 +115,12 @@ try {
     await page.waitForFunction(() => localStorage.getItem("hghubx_theme") === "dark" && JSON.parse(localStorage.getItem("hghubx_app_v1")).history.length === 0);
     await page.reload();
     await page.waitForFunction(() => window.storageMigrationFixture?.strictSecurityReady);
-    assert.deepEqual(await snapshot(page), { ...state, history: [], theme: "dark" });
+    assert.deepEqual(await snapshot(page), { ...migrated, history: [], theme: "dark" });
     await context.close();
     console.log("PASS: legacy data, swipe opt-out, adaptive and explicit appearance survive migration and restart");
   }
   {
-    const newer = { ...state, favs: [99], history: [] };
+    const newer = { ...migrated, favs: [99], history: [] };
     const { context, page } = await open({ ...oldData, hghubx_app_v1: JSON.stringify(newer), hghubx_theme: "dark", hghubx_swipe_ep_v2: "1" });
     assert.deepEqual(await snapshot(page), { ...newer, theme: "dark" });
     assert.equal(await page.evaluate(() => window.initialTheme), false);
@@ -138,12 +140,12 @@ try {
   }
   for (const failure of ["write", "remove"]) {
     const { context, page } = await open(oldData, failure);
-    assert.deepEqual(await snapshot(page), { ...state, theme: "light" });
+    assert.deepEqual(await snapshot(page), { ...migrated, theme: "light" });
     const saved = await storage(page);
     for (const [key, value] of Object.entries(oldData)) assert.equal(saved[key], value);
     await page.reload();
     await page.waitForFunction(() => window.storageMigrationFixture?.strictSecurityReady);
-    assert.deepEqual(await snapshot(page), { ...state, theme: "light" });
+    assert.deepEqual(await snapshot(page), { ...migrated, theme: "light" });
     await context.close();
     console.log(`PASS: ${failure} failure retains legacy data and preferences across restarts`);
   }
@@ -258,6 +260,50 @@ try {
     await page.waitForFunction(() => !!window.storageMigrationFixture.accountSync.error);
     assert.deepEqual((await snapshot(page)).favs, [700]);
     assert.equal((await snapshot(page)).history[0].id, 700);
+    // The upstream line contract now retains trusted sessions. A plain same-ID
+    // login remains isolated; native boot alone can rebase both cached libraries.
+    await page.evaluate(() => window.storageMigrationFixture.setUser({ id: 7 }, "https://account-b.invalid"));
+    await page.waitForFunction(() => !!window.storageMigrationFixture.accountSync.error);
+    assert.deepEqual((await snapshot(page)).favs, [], "Same ID on another origin does not merge an ordinary login");
+    await page.evaluate(() => {
+      window.storageMigrationFixture.toggleFavLocal(777);
+      window.storageMigrationFixture.addHistory(777, 3, 18, 100);
+    });
+    await page.evaluate(() => window.storageMigrationFixture.setUser({ id: 7 }, "https://account-a.invalid"));
+    await page.waitForFunction(() => !!window.storageMigrationFixture.accountSync.error);
+    await page.evaluate(() => window.storageMigrationFixture.addHistory(700, 4, 42, 100));
+    const beforeRebase = (await storage(page)).hghubx_accounts_v1;
+    await page.evaluate(() => {
+      window.originalAccountSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (key === "hghubx_accounts_v1") throw new DOMException("fixture: quota", "QuotaExceededError");
+        return window.originalAccountSetItem.call(this, key, value);
+      };
+      window.accountMigrationFixture.boot = { user: { id: 7 }, base: "https://account-b.invalid" };
+      window.dispatchEvent(new Event("hg:line-changed"));
+    });
+    await page.waitForFunction(() => window.storageMigrationFixture.accountScope.includes("account-b.invalid") && !window.storageMigrationFixture.accountSync.busy);
+    assert.deepEqual((await snapshot(page)).favs, [700, 777]);
+    assert.equal((await snapshot(page)).history.find(row => row.id === 700).t, 42);
+    assert.equal((await snapshot(page)).history.find(row => row.id === 777).t, 18);
+    assert.equal((await storage(page)).hghubx_accounts_v1, beforeRebase, "Failed rebase write keeps the complete original value");
+    await page.evaluate(() => {
+      Storage.prototype.setItem = window.originalAccountSetItem;
+      window.storageMigrationFixture.toggleFavLocal(777);
+    });
+    const rebased = JSON.parse((await storage(page)).hghubx_accounts_v1);
+    const a = JSON.stringify(["https://account-a.invalid", 7]);
+    const b = JSON.stringify(["https://account-b.invalid", 7]);
+    assert.equal(rebased.aliases[a], b);
+    assert.equal(rebased.accounts[a].history.find(row => row.id === 700).t, 42);
+    assert.equal(rebased.accounts[b].dirtyHistory[700].ep, 4);
+    assert.equal(rebased.accounts[b].dirtyHistory[777].ep, 3);
+    await page.evaluate(() => {
+      window.accountMigrationFixture.boot = { user: { id: 7 }, base: "https://account-a.invalid" };
+      window.dispatchEvent(new Event("hg:line-changed"));
+    });
+    await page.waitForFunction(() => window.storageMigrationFixture.accountScope.includes("account-a.invalid") && !window.storageMigrationFixture.accountSync.busy);
+    assert.deepEqual((await snapshot(page)).favs, [700], "Return switch must not resurrect a cancelled favorite");
     await page.evaluate(() => window.storageMigrationFixture.logout());
     assert.deepEqual(await snapshot(page), guest);
     await context.close();

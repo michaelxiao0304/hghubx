@@ -21,13 +21,16 @@ export function installFixture({ theme, titles, accountData = false }) {
   } }));
   localStorage.setItem("hghubx_swipe_ep_v2", "1");
   const callbacks = new Map();
-  let nextCallback = 0, backChannel;
+  let nextCallback = 0;
+  // Real Tauri keeps every registered listener: the app shell and the launch
+  // overlay can both listen for back-button, and unregister removes exactly one.
+  const backChannels = new Map();
   window.__IOS_UI_FIXTURE__ = {
     hardwareBack() {
-      if (!backChannel) throw new Error("Android back listener was not registered");
-      backChannel.onmessage({});
+      if (!backChannels.size) throw new Error("Android back listener was not registered");
+      for (const channel of [...backChannels.values()]) channel.onmessage({});
     },
-    hasHardwareBack() { return !!backChannel; },
+    hasHardwareBack() { return backChannels.size > 0; },
   };
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
@@ -56,7 +59,8 @@ export function installFixture({ theme, titles, accountData = false }) {
       if (command === "api_logout") return { ok: true };
       if (command === "security_set") return args.strict;
       if (command === "api_play") throw "UI fixture has no media";
-      if (command === "plugin:app|register_listener" && args.event === "back-button") { backChannel = args.handler; return; }
+      if (command === "plugin:app|register_listener" && args.event === "back-button") { backChannels.set(args.handler.id, args.handler); return null; }
+      if (command === "plugin:app|remove_listener" && args.event === "back-button") { backChannels.delete(args.channelId); return null; }
       if (command === "plugin:window|is_maximized" || command === "plugin:window|is_fullscreen") return false;
       return null;
     },

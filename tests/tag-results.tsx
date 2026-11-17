@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AppProvider, useStore } from "../src/store";
-import { TagPage } from "../src/pages/Discover";
+import { AppProvider, useStore } from "../src/shared/model/store";
+import { TagPage } from "../src/features/discover/Discover";
 import "../src/index.css";
 
 function Fixture() {

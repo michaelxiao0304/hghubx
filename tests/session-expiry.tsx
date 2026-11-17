@@ -1,10 +1,10 @@
 import React, { useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { AppProvider, useStore } from "../src/store";
-import { api, isMobile } from "../src/api";
-import Profile from "../src/pages/Profile";
-import SessionNotice from "../src/components/SessionNotice";
-import LoginModal from "../src/components/LoginModal";
+import { AppProvider, useStore } from "../src/shared/model/store";
+import { api, isMobile } from "../src/shared/api/api";
+import Profile from "../src/features/account/Profile";
+import SessionNotice from "../src/features/account/SessionNotice";
+import LoginModal from "../src/features/account/LoginModal";
 import "../src/index.css";
 
 function Probe() {

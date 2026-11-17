@@ -55,8 +55,9 @@ mod tests {
     impl Directory {
         fn new() -> Self {
             let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-            let path = std::env::temp_dir().join(format!("hghubx-source-migration-{}-{stamp}", std::process::id()));
-            fs::create_dir_all(&path).unwrap();
+            let serial = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("hghubx-source-migration-{}-{stamp}-{serial}", std::process::id()));
+            fs::create_dir(&path).unwrap();
             Self(path)
         }
     }

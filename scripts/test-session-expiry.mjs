@@ -225,10 +225,15 @@ try {
     await page.evaluate(change => {
       const f = window.authFixture;
       if (change === "logout") f.switchTo(null);
-      else f.switchTo(change === "account" ? 8 : 7, change === "origin" ? "https://second.fixture.invalid" : f.origin);
+      else if (change === "origin") {
+        f.origin = "https://second.fixture.invalid";
+        window.dispatchEvent(new Event("hg:line-changed"));
+      } else f.switchTo(change === "account" ? 8 : 7, f.origin);
     }, change);
-    await page.waitForFunction(() => !window.sessionExpiryStore.accountSync.busy);
+    await page.waitForFunction(change => !window.sessionExpiryStore.accountSync.busy
+      && (change !== "origin" || window.sessionExpiryStore.accountScope.includes("second.fixture.invalid")), change);
     const before = await state(page);
+    if (change === "origin") assert.deepEqual(before.history, library.history, "Trusted native boot retains local seconds");
     assert.equal(await page.evaluate(async () => { window.authFixture.release(); return await window.lateResult; }), "账号或线路已变化，请重试");
     const after = await state(page); assert.equal(after.expired, false); assert.equal(after.user, before.user); assert.deepEqual(after.favs, before.favs); assert.deepEqual(after.history, before.history);
     report.checks.push(`late 401 after ${change} cannot expire the current session`); await context.close();
@@ -246,15 +251,38 @@ try {
     const after = await state(page); assert.equal(after.history[0].t, 41.75); assert.deepEqual(after.favs, before.favs); assert.equal(after.guest, before.guest);
     assert(Object.keys(JSON.parse(after.accounts).accounts[JSON.stringify(["https://fixture.invalid", 7])].dirtyHistory).length > 0);
     const uploadAttempts = await page.evaluate(() => window.authFixture.calls.filter(c => c === "api_account_history_record").length);
+    await page.evaluate(() => {
+      window.authFixture.origin = "https://second.fixture.invalid";
+      window.dispatchEvent(new Event("hg:line-changed"));
+    });
+    await page.waitForFunction(() => window.sessionExpiryStore.accountScope.includes("second.fixture.invalid"));
+    assert.equal((await state(page)).expired, true, "Trusted line rebase is not a successful re-login");
+    assert.equal((await state(page)).history[0].t, 41.75);
+    assert.equal(await page.evaluate(() => window.authFixture.calls.filter(c => c === "api_account_history_record").length), uploadAttempts);
+    const rebased = JSON.parse((await state(page)).accounts);
+    const sourceKey = JSON.stringify(["https://fixture.invalid", 7]);
+    const targetKey = JSON.stringify(["https://second.fixture.invalid", 7]);
+    assert.equal(rebased.aliases[sourceKey], targetKey);
+    assert.equal(rebased.accounts[sourceKey].history[0].t, 41.75, "Original bucket remains a snapshot");
     await page.evaluate(async () => {
       const result = await window.sessionExpiryApi.login("fixture", "fixture-password");
       window.sessionExpiryStore.setUser(result.user, result.origin);
     });
     await page.waitForFunction(() => !window.sessionExpiryStore.authExpired && !window.sessionExpiryStore.accountSync.busy
-      && Object.keys(JSON.parse(localStorage.getItem("hghubx_accounts_v1")).accounts[JSON.stringify(["https://fixture.invalid", 7])].dirtyHistory).length === 0);
+      && Object.keys(JSON.parse(localStorage.getItem("hghubx_accounts_v1")).accounts[JSON.stringify(["https://second.fixture.invalid", 7])].dirtyHistory).length === 0);
     assert.equal((await state(page)).history[0].t, 41.75);
     assert.equal(await page.evaluate(() => window.authFixture.calls.filter(c => c === "api_account_history_record").length), uploadAttempts + 1);
-    report.checks.push("playback while expired persists progress across restart and resumes pending upload after successful re-login"); await context.close();
+    await page.evaluate(() => window.sessionExpiryStore.clearHistory());
+    await page.evaluate(() => {
+      window.authFixture.origin = "https://fixture.invalid";
+      window.dispatchEvent(new Event("hg:line-changed"));
+    });
+    await page.waitForFunction(() => window.sessionExpiryStore.accountScope.includes("https://fixture.invalid") && !window.sessionExpiryStore.accountSync.busy);
+    assert.deepEqual((await state(page)).history, [], "Switching back never imports a cleared snapshot");
+    await page.reload();
+    await page.waitForFunction(() => window.sessionExpiryStore?.authExpired);
+    assert.deepEqual((await state(page)).history, [], "Aliases survive restart without resurrecting history");
+    report.checks.push("expired progress survives restart and trusted rebase; only re-login resumes uploads, cleared history stays cleared on return/restart"); await context.close();
   }
 
   {

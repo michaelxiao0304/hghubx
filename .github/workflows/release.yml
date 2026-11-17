@@ -9,10 +9,10 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "构建范围：check 只查编译不出包；all 四平台；选单个只出那一个"
+        description: "构建范围：check 只查编译不出包；all 全平台（含 TV）；选单个只出那一个"
         type: choice
         default: all
-        options: [all, android-arm64, android, linux, windows, macos, ios, check]
+        options: [all, android-arm64, android, android-tv, linux, windows, macos, ios, check]
       quick:
         description: "quick 编译：thin LTO + 4 个 codegen 单元，快一倍，体积大几 MB"
         type: boolean
@@ -21,6 +21,10 @@ on:
         description: "发版用：填 tag（如 v1.2.4+hg.1），配合 platforms=all 构建完直接发 Release；留空则只出产物"
         type: string
         default: ""
+      prerelease:
+        description: "标记为 Pre-release（预发布，不出正式版）"
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}-${{ github.event_name }}-${{ github.run_id }}
@@ -101,129 +105,28 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
-  # ================= Android：按 ABI 分包 + 签名 =================
+  # ================= Android：标准版 + TV 版，共享同一构建实现 =================
   android:
-    name: Android (split per ABI)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || startsWith(inputs.platforms, 'android') }}
-    env:
-      CARGO_PROFILE_RELEASE_LTO: ${{ inputs.quick && 'thin' || 'true' }}
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ inputs.quick && '4' || '1' }}
-    steps:
-      - uses: actions/checkout@v7
+    name: Android standard
+    uses: ./.github/workflows/android-build.yml
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'android' || inputs.platforms == 'android-arm64' }}
+    with:
+      edition: standard
+      platforms: ${{ inputs.platforms }}
+      quick: ${{ inputs.quick }}
+      tag: ${{ inputs.tag }}
+    secrets: inherit
 
-      - name: 版本号对齐 tag
-        id: ver
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          elif [[ -n "${{ inputs.tag }}" ]]; then
-            V="${{ inputs.tag }}"
-            V="${V#v}"
-          else
-            V="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          fi
-          # 版本号 + Android versionCode 一起写（Tauri 自己会忽略 +hg.N 后缀）
-          node scripts/set-version.mjs "$V"
-          CODE="$(node -p "require('./src-tauri/tauri.conf.json').bundle.android.versionCode")"
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "versionCode=$CODE" >> "$GITHUB_OUTPUT"
-          echo "versionName=$V  versionCode=$CODE"
-
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      # ubuntu runner 自带 Android SDK，不再用 android-actions/setup-android（它的 license 交互会卡住）
-      - name: 准备 Android SDK / NDK
-        run: |
-          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
-          "$SDKM" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
-          echo "NDK_HOME=$SDK/ndk/28.2.13676358" >> "$GITHUB_ENV"
-          ls "$SDK/ndk"
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-      - uses: swatinem/rust-cache@v2.9.3
-        continue-on-error: true
-        timeout-minutes: 8
-        with:
-          workspaces: src-tauri -> target
-          key: android
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: 生成 Android 工程
-        run: pnpm tauri android init --ci
-
-      - name: 编译 APK（按 ABI 分包）
-        run: |
-          # quick / android-arm64 只出 arm64：真机验证用不到 v7a 和 x86_64，省三分之二时间
-          if [ "${{ inputs.quick }}" = "true" ] || [ "${{ inputs.platforms }}" = "android-arm64" ]; then
-            TARGETS="aarch64"
-          else
-            TARGETS="aarch64 armv7 x86_64"
-          fi
-          echo "targets: $TARGETS"
-          pnpm tauri android build --apk --split-per-abi --target $TARGETS
-
-      - name: 签名 APK
-        env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: |
-          set -euo pipefail
-          if [ -z "${KEYSTORE_BASE64:-}" ]; then
-            echo "::error::缺少 ANDROID_KEY_BASE64 secret，无法签名"; exit 1
-          fi
-          KS="$RUNNER_TEMP/release.keystore"
-          echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
-          BT="$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -1)"
-          APKSIGNER="$ANDROID_SDK_ROOT/build-tools/$BT/apksigner"
-          mkdir -p artifacts
-          found=0
-          for f in $(find src-tauri/gen/android/app/build/outputs/apk -name '*-release*.apk'); do
-            abi="$(basename "$(dirname "$(dirname "$f")")")"
-            out="artifacts/HGhubX_${VERSION}_${abi}.apk"
-            "$APKSIGNER" sign \
-              --ks "$KS" --ks-key-alias "$KEY_ALIAS" \
-              --ks-pass "pass:$STORE_PASSWORD" --key-pass "pass:$KEY_PASSWORD" \
-              --v4-signing-enabled false \
-              --out "$out" "$f"
-            "$APKSIGNER" verify --print-certs "$out" | head -3
-            found=$((found+1))
-          done
-          rm -f "$KS"
-          if [ "$found" -eq 0 ]; then echo "::error::没有找到 release APK"; exit 1; fi
-          # 打一下实际写进 APK 的 versionCode，升级链对不对看这行
-          AAPT2="$(ls "$ANDROID_SDK_ROOT"/build-tools/*/aapt2 | sort -V | tail -1)"
-          for a in artifacts/*.apk; do "$AAPT2" dump badging "$a" | grep -m1 "^package:"; done
-          ls -lh artifacts
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: android
-          path: artifacts/*
-          if-no-files-found: error
+  android-tv:
+    name: Android TV
+    uses: ./.github/workflows/android-build.yml
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'android-tv' }}
+    with:
+      edition: tv
+      platforms: ${{ inputs.platforms }}
+      quick: ${{ inputs.quick }}
+      tag: ${{ inputs.tag }}
+    secrets: inherit
 
   # ================= macOS：Universal（Apple Silicon + Intel）dmg =================
   macos:
@@ -504,7 +407,7 @@ jobs:
   # ================= 发布 =================
   release:
     name: Publish GitHub Release
-    needs: [windows, android, macos, linux, ios]
+    needs: [windows, android, android-tv, macos, linux, ios]
     # always()：iOS 失败时不能把整包卡住，但成功时要等它的 ipa 一起发
     if: >-
       always() &&
@@ -546,4 +449,5 @@ jobs:
           body_path: ${{ steps.notes.outputs.body_path }}
           files: artifacts/*
           generate_release_notes: true
+          prerelease: ${{ inputs.prerelease }}
           fail_on_unmatched_files: true
