@@ -119,15 +119,17 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 /* ── 接口 ───────────────────────────────────────────────── */
 
 export const api = {
-  boot: () =>
+  boot: (verifySession = true) =>
     call<{
       user: User | null;
       logged_in: boolean;
+      pending_session?: { origin: string; user: User } | null;
+      library_origin?: string | null;
       base: string;
       strict_security?: boolean;
       cli_relaxed?: boolean;
       pending_migration_identity?: { origin: string; user_id: number } | null;
-    }>("app_boot"),
+    }>("app_boot", { verifySession }),
   securitySet: (strict: boolean) => call<boolean>("security_set", { strict }),
   login: (username: string, password: string) =>
     call<AccountSnapshot>("api_login", { username, password }),

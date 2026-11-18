@@ -12,19 +12,19 @@ let server, browser;
 const expired = "登录已失效，请重新登录";
 const library = { favs: [2], likes: [2], follows: [], history: [{ id: 2, ep: 4, t: 23.5, dur: 90, at: 200000 }], localHistory: [2], dirtyHistory: {}, postLikes: [], postFavs: [] };
 try {
-  server = await createServer({ root, server: { host: "127.0.0.1", port: 0 } });
+  server = await createServer({ root, server: { host: "127.0.0.1", port: 0, watch: null } });
   await server.listen();
   await mkdir(out, { recursive: true });
   const origin = server.resolvedUrls.local[0];
   browser = await chromium.launch({ headless: true, executablePath: process.env.BROWSER_EXECUTABLE || undefined });
-  async function open({ failure = {}, mobile = false, guest = false } = {}) {
+  async function open({ failure = {}, mobile = false, guest = false, pending = false, rebasedAtBoot = false } = {}) {
     const context = await browser.newContext({ viewport: mobile ? { width: 320, height: 694 } : { width: 1100, height: 800 },
       ...(mobile ? { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1", isMobile: true, hasTouch: true } : {}) });
     await context.addInitScript(() => {
       window.savedLibraries = sessionStorage.getItem("auth-seeded") ? Object.fromEntries(["hghubx_app_v1", "hghubx_accounts_v1"].map(k => [k, localStorage.getItem(k)])) : null;
     });
     await context.addInitScript(installFixture, { theme: "light", titles: ["示例一", "示例二", "示例三"] });
-    await context.addInitScript(({ failure, library, guest }) => {
+    await context.addInitScript(({ failure, library, guest, pending, rebasedAtBoot }) => {
       if (window.savedLibraries) {
         for (const [k, v] of Object.entries(window.savedLibraries)) { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); }
       } else {
@@ -32,13 +32,20 @@ try {
         sessionStorage.setItem("auth-seeded", "1");
       }
       const user = id => ({ id, username: `user${id}`, nickname: `账号${id}`, counts: {} });
-      const fixture = window.authFixture = { failure, calls: [], holds: {}, waiting: [], user: guest ? null : user(7), origin: "https://fixture.invalid", loginFailure: false };
+      const fixture = window.authFixture = { failure, calls: [], holds: {}, waiting: [], user: guest ? null : user(7), origin: "https://fixture.invalid", loginFailure: false, pending };
+      if (rebasedAtBoot) fixture.origin = "https://second.fixture.invalid";
       fixture.switchTo = (id, origin = "https://fixture.invalid") => { fixture.user = id ? user(id) : null; fixture.origin = origin; window.sessionExpiryStore.setUser(fixture.user, origin); };
       fixture.release = (error = "401") => { for (const pending of fixture.waiting.splice(0)) error ? pending.reject(error) : pending.resolve(pending.result); };
       const original = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = async (cmd, args = {}) => {
         fixture.calls.push(cmd);
-        if (cmd === "app_boot") return { user: fixture.user, logged_in: !!fixture.user, base: fixture.origin, strict_security: true };
+        if (cmd === "app_boot") {
+          fixture.bootChecks ??= [];
+          fixture.bootChecks.push(args.verifySession);
+          return fixture.pending
+            ? { user: null, logged_in: false, base: "https://second.fixture.invalid", pending_session: { origin: fixture.origin, user: fixture.user }, strict_security: true }
+            : { user: fixture.user, logged_in: !!fixture.user, base: fixture.origin, strict_security: true, library_origin: rebasedAtBoot ? "https://fixture.invalid" : null };
+        }
         if (cmd === "api_login") {
           if (fixture.loginFailure) throw "401";
           fixture.failure = {}; fixture.user = user(7);
@@ -55,13 +62,13 @@ try {
         if (fixture.failure[cmd]) throw fixture.failure[cmd];
         return result;
       };
-    }, { failure, library, guest });
+    }, { failure, library, guest, pending, rebasedAtBoot });
     const page = await context.newPage();
     page.on("pageerror", error => report.errors.push(error.message));
     await page.route("**/*", route => new URL(route.request().url()).origin === new URL(origin).origin ? route.continue() : route.abort());
     await page.goto(new URL("tests/session-expiry.html", origin).href);
     await page.waitForFunction(() => window.sessionExpiryStore && !window.sessionExpiryStore.accountSync.busy && window.authFixture.calls.includes("app_boot"));
-    if (!guest) await page.waitForFunction(() => window.sessionExpiryStore.user?.id === 7);
+    if (!guest && !pending) await page.waitForFunction(() => window.sessionExpiryStore.user?.id === 7);
     return { context, page };
   }
   const state = page => page.evaluate(() => ({ expired: window.sessionExpiryStore.authExpired, user: window.sessionExpiryStore.user?.id,
@@ -70,6 +77,37 @@ try {
     return page.evaluate(async ({ name, args }) => { try { await window.sessionExpiryApi[name](...args); return "ok"; } catch (error) { return error.message; } }, { name, args });
   }
 
+  {
+    const { context, page } = await open({ pending: true });
+    await page.waitForFunction(() => window.sessionExpiryStore.user?.id === 7);
+    await page.waitForFunction(() => window.authFixture.bootChecks.includes(true));
+    assert.equal(await page.evaluate(() => window.authFixture.bootChecks[0]), false, "Read local identity before awaiting the publisher");
+    const cached = await state(page);
+    assert.equal(cached.user, 7, "A pending publisher check restores the local account rather than the guest library");
+    assert.deepEqual(cached.favs, library.favs);
+    assert.deepEqual(cached.history, library.history);
+    assert.equal(cached.expired, false);
+    await page.evaluate(() => window.sessionExpiryStore.addHistory(2, 4, 42, 90));
+    assert.equal(await page.evaluate(() => window.authFixture.calls.some(cmd => ["api_me", "api_account_history", "api_account_history_record"].includes(cmd))), false);
+    await page.evaluate(() => {
+      window.authFixture.pending = false;
+      window.authFixture.origin = "https://second.fixture.invalid";
+      window.dispatchEvent(new Event("online"));
+    });
+    await page.waitForFunction(() => window.sessionExpiryStore.accountScope.includes("second.fixture.invalid")
+      && window.authFixture.calls.includes("api_account_history_record") && !window.sessionExpiryStore.accountSync.busy);
+    assert.equal((await state(page)).history[0].t, 42);
+    assert.equal((await state(page)).guest, cached.guest);
+    report.checks.push("offline boot retains the account library and resumes pending progress on verified reconnect without a login");
+    await context.close();
+  }
+  {
+    const { context, page } = await open({ rebasedAtBoot: true });
+    await page.waitForFunction(() => window.sessionExpiryStore.accountScope.includes("second.fixture.invalid") && !window.sessionExpiryStore.accountSync.busy);
+    assert.deepEqual((await state(page)).history, library.history);
+    report.checks.push("a verified line change before first render reopens the saved account's episode and playback position");
+    await context.close();
+  }
   for (const mobile of [false, true]) {
     const { page, context } = await open({ mobile, failure: { api_me: "401", api_account_history: "401" } });
     await page.getByRole("complementary", { name: "登录状态提示" }).waitFor();

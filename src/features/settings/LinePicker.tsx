@@ -142,9 +142,8 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
       setState((s) => (s ? { ...s, ...next } : s));
       if (key === "custom" || key === "reset") setCustom(next.custom ? next.base : "");
       // 可信线路间后端保留会话；任一端为自定义站点时后端清会话，boot 会正常登出。
-      toast(next.custom || state?.custom
-        ? `线路已切换到 ${hostOf(next.base)}，自定义站点需重新登录`
-        : `线路已切换到 ${hostOf(next.base)}，登录状态已保留`, "ok");
+      const customChanged = (next.custom || state?.custom) && (state?.base !== next.base || state.custom !== next.custom);
+      toast(`当前线路：${hostOf(next.base)}${customChanged ? "，自定义站点需重新登录" : ""}`, "ok");
       // 走的是新域名了，列表页得重新拉一遍，否则还是旧线路的内容
       window.dispatchEvent(new Event("hg:line-changed"));
     } catch (e) {

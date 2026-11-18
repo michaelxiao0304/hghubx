@@ -32,7 +32,7 @@ pub fn normalize_base(raw: &str) -> Option<String> {
 /// 国内网络连不上 `.com`，只能用镜像；镜像和主站是同一后端、同一个账号体系。
 /// huangguoai.ai 只是导航站（API 全 404），不是固定线路，也不授予凭据信任。
 /// 自定义线路必须由用户显式保存；旧格式文件只恢复地址，不自动授予登录权限。
-/// 会话仍绑定 origin；只有可信↔可信切换会经 SessionStore::rebase_if_trusted 改写 origin，
+/// 会话仍绑定 origin；只有可信↔可信切换会经 SessionStore 改写 origin，
 /// 其余切换不会把已有 token 发送给另一个站点。
 pub fn trusted_auth_origin(origin: &str) -> bool {
     matches!(origin, "https://huangguoai.com")

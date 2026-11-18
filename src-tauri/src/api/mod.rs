@@ -70,11 +70,16 @@ impl Api {
 
     async fn account_request(&self, method: &str, path: &str, body: Option<Value>, expected_user_id: Option<i64>, expected_origin: Option<&str>) -> Result<Value, String> {
         let session = self.account_session(expected_user_id, expected_origin)?;
-        let result = edge(&session.origin, method, path, body, Some(&session.token)).await?;
-        if base() != session.origin || !self.session.is_current(&session) {
+        let result = edge(&session.origin, method, path, body, Some(&session.token)).await;
+        self.ensure_current(&session)?;
+        result
+    }
+
+    fn ensure_current(&self, session: &Session) -> Result<(), String> {
+        if base() != session.origin || !self.session.is_current(session) {
             return Err("账号或线路已变化，请重试".into());
         }
-        Ok(result)
+        Ok(())
     }
 }
 

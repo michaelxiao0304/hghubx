@@ -57,21 +57,18 @@ pub fn set_text_interaction(app: tauri::AppHandle, enabled: bool) -> Result<(), 
 /* ───────────────────────── 会话 ───────────────────────── */
 
 #[tauri::command]
-pub async fn app_boot(state: State<'_, Api>) -> Result<Value, String> {
+pub async fn app_boot(state: State<'_, Api>, verify_session: Option<bool>) -> Result<Value, String> {
     let origin = base();
-    if crate::network_policy::strict_security() {
+    if verify_session.unwrap_or(true) && !crate::net::is_custom_line() {
         state.session.reconcile_on_boot(&origin).await;
     }
     let origin = base();
-    let credentials_allowed = !crate::network_policy::strict_security()
-        || crate::net::trusted_auth_origin(&origin);
-    Ok(json!({
-        "user": if credentials_allowed { state.session.user(&origin) } else { Value::Null },
-        "logged_in": credentials_allowed && state.session.token(&origin).is_some(),
-        "base": origin,
-        "strict_security": crate::network_policy::strict_security(),
-        "cli_relaxed": crate::network_policy::cli_strict_override() == Some(false),
-    }))
+    let strict = crate::network_policy::strict_security();
+    let mut boot = state.session.boot_session(&origin, !strict || crate::net::trusted_auth_origin(&origin), crate::net::is_custom_line());
+    boot["base"] = json!(origin);
+    boot["strict_security"] = json!(strict);
+    boot["cli_relaxed"] = json!(crate::network_policy::cli_strict_override() == Some(false));
+    Ok(boot)
 }
 
 /// 切换严格安全模式（关闭后回退到兼容清洗与网络守卫模式，立即生效并落盘）。

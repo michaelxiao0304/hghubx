@@ -67,7 +67,7 @@ pub async fn api_login(
     if base() != origin {
         return Err("登录期间线路已变化，请重新登录".into());
     }
-    if !state.session.set_if_revision(revision, &origin, token, user) {
+    if !state.session.set_if_revision(revision, &origin, token, user)? {
         return Err("登录期间账号状态已变化，请重试".into());
     }
     Ok(account)
@@ -108,7 +108,7 @@ pub async fn api_register(
     if base() != origin {
         return Err("注册期间线路已变化，请重新登录".into());
     }
-    if !state.session.set_if_revision(revision, &origin, token, user) {
+    if !state.session.set_if_revision(revision, &origin, token, user)? {
         return Err("注册期间账号状态已变化，请重试".into());
     }
     Ok(account)
@@ -116,16 +116,16 @@ pub async fn api_register(
 
 #[tauri::command]
 pub async fn api_logout(state: State<'_, Api>, expected_user_id: Option<i64>, expected_origin: Option<String>) -> Result<Value, String> {
-    let session = state.account_session(expected_user_id, expected_origin.as_deref())?;
-    let _ = edge(
-        &session.origin,
-        "POST",
-        "/api/account/logout",
-        None,
-        Some(&session.token),
-    )
-    .await;
-    if !state.session.clear_if_current(&session) {
+    // A held session can be signed out locally even when its origin is unavailable.
+    let session = match (expected_user_id, expected_origin.as_deref()) {
+        (Some(id), Some(origin)) => state.session.snapshot(origin)
+            .filter(|s| s.user["id"].as_i64() == Some(id)).ok_or("账号已变化，请重试")?,
+        _ => state.account_session(expected_user_id, expected_origin.as_deref())?,
+    };
+    if base() == session.origin && (!crate::network_policy::strict_security() || crate::net::trusted_auth_origin(&session.origin)) {
+        let _ = edge(&session.origin, "POST", "/api/account/logout", None, Some(&session.token)).await;
+    }
+    if !state.session.clear_if_current(&session)? {
         return Err("账号已变化，请重试".into());
     }
     Ok(json!({ "ok": true }))
@@ -134,11 +134,9 @@ pub async fn api_logout(state: State<'_, Api>, expected_user_id: Option<i64>, ex
 #[tauri::command]
 pub async fn api_me(state: State<'_, Api>, expected_user_id: Option<i64>, expected_origin: Option<String>) -> Result<Value, String> {
     let session = state.account_session(expected_user_id, expected_origin.as_deref())?;
-    let me = edge(&session.origin, "GET", "/api/account/me", None, Some(&session.token)).await?;
-    let account = normalize_account(me, &session.origin)?;
-    if base() != session.origin {
-        return Err("读取账号期间线路已变化".into());
-    }
+    let me = edge(&session.origin, "GET", "/api/account/me", None, Some(&session.token)).await;
+    state.ensure_current(&session)?;
+    let account = normalize_account(me?, &session.origin)?;
     if !state.session.update_user_if_current(&session, account["user"].clone()) {
         return Err("读取账号期间登录状态已变化".into());
     }

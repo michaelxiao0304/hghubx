@@ -25,8 +25,8 @@
   `normalizeHistory()`、`loadPersist()`、`readThemePreference()`、`LS`、
   `STORAGE_KEYS.theme`/`autoLine`。
 - 会话：[`src-tauri/src/session.rs`](../../src-tauri/src/session.rs) 的 `Session`、
-  `SessionStore`、`bind()`、`token()`、`snapshot()`、`stored_origin()`、`rebase_if_trusted()`、
-  `rebase_or_clear()`、`reconcile_on_boot()`、
+  `SessionStore`、`bind()`、`token()`、`snapshot()`、`stored_origin()`、`boot_session()`、
+  `line_changed()`、`reconcile_on_boot()`、
   `set_if_revision()`、`is_current()`、`update_user_if_current()`、`clear_if_current()`、`persist()`。
 - 清缓存：[`src-tauri/src/api/platform.rs`](../../src-tauri/src/api/platform.rs) 的
   `cache_clear`；[`src-tauri/src/cache.rs`](../../src-tauri/src/cache.rs) 的
@@ -78,9 +78,9 @@
    `ACCOUNT_KEY`。登录/退出时 `setUser()` 清空 pending、上传计时器和同步状态，但不清空本地
    收藏/历史对象；账号同步的合并、dirty history 和 `clearHistory()` 的远端删除见
    `accountData.ts`。
-7. `SessionStore` 把 `{origin, token, user, revision}` 写入应用数据目录的 `session.json`。
+7. `SessionStore` 把 `origin`、`token`、`user` 和可选的原片库地址 `library_origin` 写入应用数据目录的 `session.json`。
    旧版本没有 `origin`，反序列化后 `token()`/`snapshot()` 不会把它分配给当前线路，升级后必须
-   重新登录。`revision` 是进程内代次，不落盘；同 token 重新登录也会推进 revision。
+   重新登录。`revision` 是进程内代次，不落盘；同 token 重新登录也会推进 revision。登录或退出需原子写盘成功后才确认，写入失败会提示重试。
 8. `cache_clear` 先清 `media::clear_caches()`（封面、播放列表、Key、分片内存缓存），再由
    `clear_web_cache()` 清平台 WebView 缓存。Linux 只清 `MEMORY_CACHE`、`DISK_CACHE`、
    `OFFLINE_APPLICATION_CACHE`，明确排除 cookies、localStorage、sessionStorage、IndexedDB、
@@ -110,9 +110,12 @@
 - `accountScope`、`lineEpoch`、`generation` 必须一起进入异步结果校验；旧账号或旧线路的返回
   不能写进当前桶，否则会把 A 的收藏/历史显示在 B 上。
 - 会话 token 绑定 origin 和 revision。`token()`/`user()`/`snapshot()` 按 origin 精确匹配；
-  唯一跨 origin 通道是 `rebase_if_trusted()`——仅当旧新两端都是固定线路或本进程发布页确认的
-  可信镜像时改写 origin（revision 递增并落盘），否则切线路仍 `SessionStore.clear()`。
-  旧 `session.json` 没有 origin 时不得猜归属，也不参与 rebase。
+  两端均为固定线路或本次进程已验证的发布镜像时，`SessionStore::line_changed()` 或启动恢复才可迁移会话。
+  标准版启动先通过 `app_boot(verifySession: false)` 读取磁盘会话，再按需异步验证发布页。
+  发布页暂时不可达时，`app_boot.pending_session` 仅提供原线路与本地用户资料，账号片库仍按原 origin 读取；
+  此时暂停账号同步并在本机续记进度。恢复联网、回到前台、点击重试或前台等待 60 秒会再次尝试。
+  服务端对当前会话明确返回 401 时仍提示重新登录。显式退出清除已保存的登录，包括等待验证的会话。
+  无 origin 的旧凭据无法恢复。
 - 清缓存不能调用 `clear_all_browsing_data`；它会连 cookies/localStorage 一起删，导致登录和
   偏好丢失。非 Linux 平台宁可只清内存缓存，也不做全量清理。
 - 本地写入失败要可见（偏好提示、账号 `sync.error`），不能静默显示“已保存”。
@@ -135,6 +138,6 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 - library 合并 fork `app_data_v1:default:library`、`hghubx_app_v1` 和旧 `hghub_app_v1`，保留原始键及 `hghubx_library_backup_v2`。收藏去重、观看记录按最新 `at` 保留集数、秒数和时长。`_libraryMigration:2` 与合并结果一次写入，防止后续清空历史或取消收藏又被旧值恢复；备份或目标写入失败保留原值，下次启动重试。这是普通旧偏好键清理规则的例外。
 - 401 将当前代次标记为 `authExpired`，保留游客/账号片库，停止同步和上传，本机仍记录观看进度；403、超时及旧代次的响应不能触发当前会话失效。成功重新登录恢复同步。
 - `SessionNotice` 的关闭按钮与“暂不登录”关闭当前作用域提示；取消登录表单不会重新弹出，个人页仍提供重新登录入口。关闭提示不会清除账号缓存，也不把过期 token 当成可用。
-- 原生 boot 确认同一账号跨可信线路保留会话后，`accountRebase.ts` 合并新旧桶，最新进度优先，保留待上传历史及本地秒数。`hghubx_accounts_v1.aliases` 与合并数据一起写入，旧桶保留为快照，后续读写跟随别名；回切不重新导入旧快照。失败时旧磁盘值不变，内存结果继续可用并在后续写入重试。
+- 原生 boot 确认同一账号跨可信线路保留会话后（冷启动可用已保存的 `library_origin` 找到原桶），`accountRebase.ts` 合并新旧桶，最新进度优先，保留待上传历史及本地秒数。`hghubx_accounts_v1.aliases` 与合并数据一起写入，旧桶保留为快照，后续读写跟随别名；回切不重新导入旧快照。失败时旧磁盘值不变，内存结果继续可用并在后续写入重试。
 - 普通 `setUser` 登录不创建跨站别名；相同数字 ID 不代表同一站点账号。可信切线保留已确认的失效状态，只有实际重新登录才能解除。
 - 核心回归还包括 `pnpm test:session-expiry`；模拟 IPC 不能代替原生 WebView 或真实账号验证。

@@ -30,6 +30,9 @@ pub struct Session {
     pub token: String,
     #[serde(default)]
     pub user: serde_json::Value,
+    /// First origin of this login's verified line changes, used only to locate its local library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    library_origin: Option<String>,
     /// Process-local identity epoch, so even logout/login with a reused token invalidates old work.
     #[serde(skip)]
     pub revision: u64,
@@ -76,7 +79,7 @@ mod tests {
         let first = store.snapshot(origin).unwrap();
         store.set(origin, "second".into(), json!({"id": 2}));
         assert!(!store.update_user_if_current(&first, json!({"id": 1, "nickname": "late"})));
-        assert!(!store.clear_if_current(&first));
+        assert!(!store.clear_if_current(&first).unwrap());
         assert_eq!(store.user(origin)["id"], 2);
         let second = store.snapshot(origin).unwrap();
         assert!(!store.update_user_if_current(&second, json!({"id": 1})));
@@ -92,7 +95,7 @@ mod tests {
         store.clear();
         store.set(origin, "same".into(), json!({"id": 1}));
         assert!(!store.is_current(&old));
-        assert!(!store.clear_if_current(&old));
+        assert!(!store.clear_if_current(&old).unwrap());
         assert!(serde_json::to_value(store.snapshot(origin).unwrap()).unwrap().get("revision").is_none());
     }
 
@@ -101,9 +104,15 @@ mod tests {
         let store = SessionStore::new();
         let origin = "https://example.com";
         let revision = store.revision();
-        assert!(store.set_if_revision(revision, origin, "new".into(), json!({"id": 2})));
-        assert!(!store.set_if_revision(revision, origin, "late".into(), json!({"id": 1})));
+        assert!(store.set_if_revision(revision, origin, "new".into(), json!({"id": 2})).is_err());
+        assert!(store.token(origin).is_none());
+        let dir = std::env::temp_dir().join(format!("hghubx-login-revision-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        store.bind(dir.clone());
+        assert!(store.set_if_revision(revision, origin, "new".into(), json!({"id": 2})).unwrap());
+        assert!(!store.set_if_revision(revision, origin, "late".into(), json!({"id": 1})).unwrap());
         assert_eq!(store.user(origin)["id"], 2);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // Trusted rebase tests parameterize the trust predicate (like the real
@@ -130,7 +139,7 @@ mod tests {
         assert_eq!(store.revision(), before.revision.wrapping_add(1));
         assert!(!store.is_current(&before));
         assert!(!store.update_user_if_current(&before, json!({"id": 1, "nickname": "late"})));
-        assert!(!store.clear_if_current(&before));
+        assert!(!store.clear_if_current(&before).unwrap());
         assert_eq!(store.stored_origin().as_deref(), Some(new_origin));
     }
 
@@ -203,13 +212,13 @@ mod tests {
     }
 
     #[test]
-    fn rebase_or_clear_keeps_trusted_and_drops_untrusted() {
+    fn line_change_keeps_trusted_and_drops_custom() {
         let store = SessionStore::new();
         store.set("https://huangguoai.com", "secret-token".into(), json!({"id": 1}));
-        store.rebase_or_clear("https://mirror-a.example", trusted_pair);
+        store.line_changed("https://mirror-a.example", false, trusted_pair);
         assert_eq!(store.token("https://mirror-a.example").as_deref(), Some("secret-token"));
         // Untrusted target: the session is dropped, never handed over.
-        store.rebase_or_clear("https://custom.example", trusted_pair);
+        store.line_changed("https://custom.example", true, trusted_pair);
         assert_eq!(store.token("https://mirror-a.example"), None);
         assert_eq!(store.token("https://custom.example"), None);
         assert!(store.stored_origin().is_none());
@@ -217,8 +226,29 @@ mod tests {
 
     #[tokio::test]
     async fn boot_reconcile_verifies_stored_mirror_even_when_current_line_is_fixed() {
+        let dir = std::env::temp_dir().join(format!("hghubx-session-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = SessionStore::new();
+        previous.bind(dir.clone());
+        previous.set("https://mirror-a.example", "secret-token".into(), json!({"id": 1}));
+        // An overlay update opens the same data directory with empty process-local mirror trust.
         let store = SessionStore::new();
-        store.set("https://mirror-a.example", "secret-token".into(), json!({"id": 1}));
+        store.bind(dir.clone());
+        let before_switch = store.snapshot("https://mirror-a.example").unwrap();
+        let main = "https://huangguoai.com";
+        store.line_changed(main, false, |origin| origin == main);
+        assert_eq!(store.stored_origin().as_deref(), Some("https://mirror-a.example"));
+        assert!(store.token(main).is_none());
+        assert!(!store.is_current(&before_switch));
+        store.reconcile_with(main, || main.into(), |origin| origin == main, |_| std::future::ready(())).await;
+        let reopened = SessionStore::new();
+        reopened.bind(dir.clone());
+        assert_eq!(reopened.stored_origin(), store.stored_origin());
+        assert!(reopened.token(main).is_none());
+        let pending = reopened.boot_session(main, true, false);
+        assert_eq!(pending["pending_session"], json!({"origin":"https://mirror-a.example","user":{"id":1}}));
+        assert_eq!(pending["logged_in"], false);
+        assert!(pending["user"].is_null());
         let published = std::sync::Mutex::new(Vec::<String>::new());
         store
             .reconcile_with(
@@ -240,6 +270,11 @@ mod tests {
             store.token("https://huangguoai.com").as_deref(),
             Some("secret-token")
         );
+        let active = store.boot_session(main, true, false);
+        assert_eq!(active["library_origin"], "https://mirror-a.example");
+        assert!(active["pending_session"].is_null());
+        assert_eq!(active["user"]["id"], 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
@@ -272,7 +307,8 @@ impl SessionStore {
         (cur.origin == origin && !cur.token.is_empty()).then(|| cur.token.clone())
     }
 
-    pub fn user(&self, origin: &str) -> serde_json::Value {
+    #[cfg(test)]
+    fn user(&self, origin: &str) -> serde_json::Value {
         let cur = self.current.lock().unwrap();
         if cur.origin == origin && !cur.token.is_empty() {
             cur.user.clone()
@@ -294,53 +330,54 @@ impl SessionStore {
         (!cur.token.is_empty() && !cur.origin.is_empty()).then(|| cur.origin.clone())
     }
 
-    /// Trusted-line switch: the upstream lines share one account system, so a
-    /// login may follow a switch when BOTH the old and the new origin are
-    /// credential-trusted (fixed line, or a mirror confirmed by a trusted
-    /// publish page in this process). The trust predicate is injected by the
-    /// caller so this module stays independent of `crate::lines`.
-    ///
-    /// Returns true when the session is usable on `new_origin` afterwards
-    /// (rebased, or already bound there); false means "not moved" and manual
-    /// callers must fall back to `clear()`. A successful rebase bumps the
-    /// revision with `set_if_revision` semantics so old in-flight work cannot
-    /// write back, and persists the new origin.
-    pub fn rebase_if_trusted(&self, new_origin: &str, trusted: impl Fn(&str) -> bool) -> bool {
-        {
-            let mut cur = self.current.lock().unwrap();
-            if cur.token.is_empty() || cur.origin.is_empty() {
-                return false;
-            }
-            if !trusted(&cur.origin) || !trusted(new_origin) {
-                return false;
-            }
-            if cur.origin == new_origin {
-                return true;
-            }
-            cur.origin = new_origin.to_string();
+    /// Returns only local profile data; transport authorization remains origin-bound.
+    pub fn boot_session(&self, origin: &str, authorized: bool, custom: bool) -> serde_json::Value {
+        let cur = self.current.lock().unwrap();
+        let stored = !cur.token.is_empty() && !cur.origin.is_empty() && !cur.user.is_null();
+        let active = stored && cur.origin == origin && authorized;
+        let pending = stored && !active && !custom;
+        serde_json::json!({
+            "logged_in": active,
+            "user": active.then_some(&cur.user),
+            "library_origin": cur.library_origin.as_deref().filter(|_| active || pending),
+            "pending_session": pending.then(|| serde_json::json!({ "origin": cur.origin, "user": cur.user })),
+        })
+    }
+
+    /// Only a verified pair may move the token. The caller holds the session lock.
+    fn rebase(cur: &mut Session, new_origin: &str, trusted: impl Fn(&str) -> bool) -> bool {
+        if cur.token.is_empty() || cur.origin.is_empty() || !trusted(&cur.origin) || !trusted(new_origin) {
+            return false;
+        }
+        if cur.origin != new_origin {
+            cur.library_origin.get_or_insert_with(|| cur.origin.clone());
+            cur.origin = new_origin.to_owned();
             cur.revision = cur.revision.wrapping_add(1);
         }
-        self.persist();
         true
     }
 
-    /// Line-switch policy in one place: keep the login only when the trusted
-    /// rebase succeeds, otherwise drop it (custom/untrusted endpoints never
-    /// receive the old token). Callers pass the credential-trust predicate.
-    pub fn rebase_or_clear(&self, new_origin: &str, trusted: impl Fn(&str) -> bool) {
-        if !self.rebase_if_trusted(new_origin, trusted) {
-            self.clear();
-        }
+    #[cfg(test)]
+    fn rebase_if_trusted(&self, new_origin: &str, trusted: impl Fn(&str) -> bool) -> bool {
+        let ok = Self::rebase(&mut self.current.lock().unwrap(), new_origin, trusted);
+        if ok { self.persist(); }
+        ok
     }
 
-    /// Boot-time reconciliation under strict security: a session persisted on
-    /// a previous line may follow a trusted switch recorded in line.json before
-    /// this process started. Verify the CURRENT origin first (publisher refresh
-    /// fills the trusted-mirror set), then rebase only when both ends are
-    /// credential-trusted; otherwise the session stays on its old origin and
-    /// boot reports logged-out for the current line (fail closed). A session
-    /// already bound to an unverified current origin only gets the original
-    /// publisher refresh, never a move.
+    pub fn line_changed(&self, new_origin: &str, custom_boundary: bool, trusted: impl Fn(&str) -> bool) {
+        if custom_boundary {
+            self.clear();
+            return;
+        }
+        let mut cur = self.current.lock().unwrap();
+        let revision = cur.revision;
+        let moved = Self::rebase(&mut cur, new_origin, trusted);
+        // A pre-switch login or 401 is stale even while publisher verification is pending.
+        cur.revision = revision.wrapping_add(1);
+        drop(cur);
+        if moved { self.persist(); }
+    }
+
     pub async fn reconcile_on_boot(&self, origin: &str) {
         self.reconcile_with(
             origin,
@@ -371,11 +408,13 @@ impl SessionStore {
             if let Some(old) = stored.as_deref().filter(|old| *old != origin) {
                 verify(old.to_owned()).await;
                 verify(origin.to_owned()).await;
-                if current_base() == origin && self.revision() == rev {
-                    let _ = self.rebase_if_trusted(origin, trusted);
-                }
+                let moved = {
+                    let mut cur = self.current.lock().unwrap();
+                    cur.revision == rev && current_base() == origin && Self::rebase(&mut cur, origin, trusted)
+                };
+                if moved { self.persist(); }
             }
-        } else if !crate::net::trusted_auth_origin(origin) {
+        } else if crate::network_policy::strict_security() && !crate::net::trusted_auth_origin(origin) {
             verify(origin.to_owned()).await;
         }
     }
@@ -384,17 +423,16 @@ impl SessionStore {
         self.current.lock().unwrap().revision
     }
 
-    pub fn set_if_revision(&self, expected_revision: u64, origin: &str, token: String, user: serde_json::Value) -> bool {
-        {
-            let mut cur = self.current.lock().unwrap();
-            if cur.revision != expected_revision { return false; }
-            cur.origin = origin.to_string();
-            cur.token = token;
-            cur.user = user;
-            cur.revision = cur.revision.wrapping_add(1);
-        }
-        self.persist();
-        true
+    pub fn set_if_revision(&self, expected_revision: u64, origin: &str, token: String, user: serde_json::Value) -> Result<bool, String> {
+        let mut cur = self.current.lock().unwrap();
+        if cur.revision != expected_revision { return Ok(false); }
+        let next = Session {
+            origin: origin.to_owned(), token, user, library_origin: None,
+            revision: cur.revision.wrapping_add(1),
+        };
+        self.save(&next).map_err(|_| "登录信息未能保存，请检查应用存储空间后重试")?;
+        *cur = next;
+        Ok(true)
     }
 
     fn same_identity(current: &Session, expected: &Session) -> bool {
@@ -420,17 +458,13 @@ impl SessionStore {
         true
     }
 
-    pub fn clear_if_current(&self, expected: &Session) -> bool {
-        {
-            let mut cur = self.current.lock().unwrap();
-            if !Self::same_identity(&cur, expected) { return false; }
-            cur.token.clear();
-            cur.origin.clear();
-            cur.user = serde_json::Value::Null;
-            cur.revision = cur.revision.wrapping_add(1);
-        }
-        self.persist();
-        true
+    pub fn clear_if_current(&self, expected: &Session) -> Result<bool, String> {
+        let mut cur = self.current.lock().unwrap();
+        if !Self::same_identity(&cur, expected) { return Ok(false); }
+        let next = Session { revision: cur.revision.wrapping_add(1), ..Session::default() };
+        self.save(&next).map_err(|_| "退出状态未能保存，请检查应用存储空间后重试")?;
+        *cur = next;
+        Ok(true)
     }
 
     #[cfg(test)]
@@ -438,6 +472,7 @@ impl SessionStore {
         {
             let mut cur = self.current.lock().unwrap();
             cur.origin = origin.to_string();
+            cur.library_origin = None;
             cur.token = token;
             cur.user = user;
             cur.revision = cur.revision.wrapping_add(1);
@@ -448,6 +483,7 @@ impl SessionStore {
     pub fn clear(&self) {
         {
             let mut cur = self.current.lock().unwrap();
+            cur.library_origin = None;
             cur.token.clear();
             cur.origin.clear();
             cur.user = serde_json::Value::Null;
@@ -457,25 +493,27 @@ impl SessionStore {
     }
 
     fn persist(&self) {
-        // Keep state locked through the write so a slower earlier writer cannot persist over a new login.
         let snapshot = self.current.lock().unwrap();
-        if let Some(path) = self.file.lock().unwrap().as_ref() {
-            if let Ok(text) = serde_json::to_string_pretty(&*snapshot) {
-                let temp = path.with_extension("json.tmp");
-                let mut options = std::fs::OpenOptions::new();
-                options.write(true).create(true).truncate(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                if let Ok(mut file) = options.open(&temp) {
-                    use std::io::Write;
-                    if file.write_all(text.as_bytes()).is_ok() && file.sync_all().is_ok() {
-                        let _ = std::fs::rename(&temp, path);
-                    }
-                }
-            }
+        let _ = self.save(&snapshot);
+    }
+
+    // Callers hold current until rename so an older writer cannot overwrite a newer login.
+    fn save(&self, session: &Session) -> std::io::Result<()> {
+        use std::io::Write;
+        let bound = self.file.lock().unwrap();
+        let path = bound.as_ref().ok_or_else(|| std::io::Error::other("session directory unavailable"))?;
+        let temp = path.with_extension("json.tmp");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
+        let mut file = options.open(&temp)?;
+        file.write_all(&serde_json::to_vec(session)?)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(temp, path)
     }
 }

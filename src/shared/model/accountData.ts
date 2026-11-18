@@ -26,6 +26,7 @@ export type AccountData = GuestData & {
 };
 type SyncState = { busy: boolean; error: string; lastSynced: number; favoritesKnown: boolean };
 const ACCOUNT_KEY = "hghubx_accounts_v1";
+const PENDING_LINE = "登录信息已保留，正在等待验证线路。恢复连接后会自动同步。";
 const empty = (): AccountData => ({ likes: [], favs: [], follows: [], history: [], postLikes: [], postFavs: [], dirtyHistory: {}, localHistory: [] });
 const ids = (value: unknown): number[] => Array.isArray(value)
   ? [...new Set(value.filter((id): id is number => Number.isSafeInteger(id) && id > 0))] : [];
@@ -62,7 +63,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const render = () => { snapshotRevision.current++; redraw(n => n + 1); };
   const mounted = useRef(true);
   const saveGuestRef = useRef(saveGuest); saveGuestRef.current = saveGuest;
-  const state = useRef<{ user: User | null; origin: string; key: string; generation: number; authExpired: boolean; data: AccountData; sync: SyncState } | null>(null);
+  const state = useRef<{ user: User | null; origin: string; key: string; generation: number; authExpired: boolean; awaitingTrust: boolean; data: AccountData; sync: SyncState } | null>(null);
   const accounts = useRef<Record<string, AccountData>>({});
   const aliases = useRef<Record<string, string>>({});
   const guest = useRef(sanitize(initialGuest));
@@ -77,7 +78,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
         }
       }
     } catch { /* A damaged account cache must not erase legacy guest records. */ }
-    state.current = { user: null, origin: "", key: "guest", generation: 0, authExpired: false, data: guest.current, sync: { busy: false, error: "", lastSynced: 0, favoritesKnown: false } };
+    state.current = { user: null, origin: "", key: "guest", generation: 0, authExpired: false, awaitingTrust: false, data: guest.current, sync: { busy: false, error: "", lastSynced: 0, favoritesKnown: false } };
   }
   const pending = useRef(new Map<string, Promise<void>>());
   const mutation = useRef(0);
@@ -92,10 +93,11 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const flushTimer = useRef<number | undefined>(undefined);
   const syncTimer = useRef<number | undefined>(undefined);
   const isCurrent = (generation: number) => mounted.current && state.current!.generation === generation;
-  const canSync = (generation: number) => isCurrent(generation) && !state.current!.authExpired;
+  const canSync = (generation: number) => isCurrent(generation) && !state.current!.authExpired && !state.current!.awaitingTrust;
   useLayoutEffect(() => observeAuthFailures(args => {
     const { user, origin, generation } = state.current!;
     if (!user || !origin) return;
+    if (state.current!.awaitingTrust) return () => false;
     if ((args?.expectedUserId != null && args.expectedUserId !== user.id)
       || (args?.expectedOrigin != null && args.expectedOrigin !== origin)) return () => false;
     return () => {
@@ -116,6 +118,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const identity = (): AccountIdentity => {
     const s = state.current!;
     if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
+    if (s.awaitingTrust) throw new Error(PENDING_LINE);
     if (!s.user || !s.origin) throw new Error("请先登录当前线路的账号");
     return { expectedUserId: s.user.id, expectedOrigin: s.origin };
   };
@@ -251,22 +254,29 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     }
   }, []);
   syncRef.current = syncAccount;
-  const switchSession = useCallback((user: User | null, origin?: string, restored = false) => {
+  const retrySync = useCallback(async () => {
+    if (state.current!.awaitingTrust) window.dispatchEvent(new Event("hg:session-retry"));
+    else await syncAccount();
+  }, [syncAccount]);
+  const switchSession = useCallback((user: User | null, origin?: string, restored = false, awaitingTrust = false, libraryOrigin?: string | null) => {
     const s = state.current!;
     const nextOrigin = origin ?? s.origin;
     const next = user && Number.isSafeInteger(user.id) && user.id > 0 ? user : null;
     const key = next ? JSON.stringify([nextOrigin, next.id]) : "guest";
-    const rebased = restored && next && s.user && s.user.id === next.id && s.origin !== nextOrigin;
-    const expired = !!rebased && s.authExpired;
+    const sameAccount = restored && next && s.user?.id === next.id;
+    const expired = !!sameAccount && s.authExpired;
+    const sourceOrigin = libraryOrigin ?? (sameAccount ? s.origin : undefined);
     storageError.current = "";
-    if (rebased) {
-      const sourceKey = accountKey(aliases.current, s.key);
+    if (restored && next && sourceOrigin && sourceOrigin !== nextOrigin && (!awaitingTrust || libraryOrigin)) {
+      const sourceKey = accountKey(aliases.current, JSON.stringify([sourceOrigin, next.id]));
       const targetKey = accountKey(aliases.current, key);
       if (sourceKey !== targetKey) {
+        const source = sameAccount ? s.data : accounts.current[sourceKey];
         // Boot, not an arbitrary same-ID login, authorizes a cross-origin merge.
         // Persist data and aliases together; failed writes leave the old disk
         // value intact and the in-memory merge is retried by the next persist.
-        accounts.current[targetKey] = mergeRebasedAccounts(s.data, accounts.current[targetKey]);
+        const target = accounts.current[targetKey];
+        accounts.current[targetKey] = source ? mergeRebasedAccounts(source, target) : target ?? applyInteractions(empty(), next.interactions);
         aliases.current[sourceKey] = targetKey;
         try { localStorage.setItem(ACCOUNT_KEY, JSON.stringify({ version: 1, accounts: accounts.current, aliases: aliases.current })); }
         catch { storageError.current = "本机账号缓存保存失败，请检查存储空间"; }
@@ -277,21 +287,22 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     s.generation++; mutation.current++; historyMutation.current++;
     s.user = next; s.origin = nextOrigin; s.key = key;
     s.authExpired = expired;
+    s.awaitingTrust = awaitingTrust;
     s.data = next ? accounts.current[accountKey(aliases.current, key)] || applyInteractions(empty(), next.interactions) : guest.current;
-    s.sync = { busy: false, error: storageError.current || (expired ? AUTH_EXPIRED_MESSAGE : ""), lastSynced: 0, favoritesKnown: false };
+    s.sync = { busy: false, error: storageError.current || (expired ? AUTH_EXPIRED_MESSAGE : awaitingTrust ? PENDING_LINE : ""), lastSynced: 0, favoritesKnown: false };
     sentHistory.current.clear(); pending.current.clear(); needsResync.current = false;
     render();
-    if (next && !expired) void syncRef.current().catch(() => {});
+    if (next && !expired && !awaitingTrust) void syncRef.current().catch(() => {});
   }, []);
   const setUser = useCallback((user: User | null, origin?: string) => switchSession(user, origin), [switchSession]);
   const generation = useCallback(() => state.current!.generation, []);
-  const restoreSession = useCallback((user: User | null, origin: string, expectedGeneration: number) => {
+  const restoreSession = useCallback((user: User | null, origin: string, expectedGeneration: number, awaitingTrust: boolean, libraryOrigin?: string | null) => {
     if (!isCurrent(expectedGeneration)) return;
     if (!user && !state.current!.user) { state.current!.origin = origin; return; }
     // 同一账号同一线路的重复 boot（切线后 rebase 成功）不重置 generation/同步状态。
     const s = state.current!;
-    if (user && s.user && s.user.id === user.id && s.origin === origin) return;
-    switchSession(user, origin, true);
+    if (user && s.user && s.user.id === user.id && s.origin === origin && s.awaitingTrust === awaitingTrust) return;
+    switchSession(user, origin, true, awaitingTrust, libraryOrigin);
   }, [switchSession]);
   const logout = useCallback(async () => {
     const { generation: version, user, origin } = state.current!;
@@ -399,7 +410,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const rev = snapshotRevision.current;
   return useMemo(() => ({
     user: s.user, authExpired: s.authExpired, setUser, restoreSession, generation, logout, accountScope: `${s.key}:${s.generation}`, accountSync: s.sync,
-    syncAccount, likes: s.data.likes, favs: s.data.favs, postLikes: s.data.postLikes, postFavs: s.data.postFavs, follows: s.data.follows, history: s.data.history,
+    syncAccount: retrySync, likes: s.data.likes, favs: s.data.favs, postLikes: s.data.postLikes, postFavs: s.data.postFavs, follows: s.data.follows, history: s.data.history,
     isFav: (id: number, kind: Kind = "video") => (kind === "video" ? s.data.favs : s.data.postFavs).includes(id),
     isLiked: (id: number, ep?: number, kind: Kind = "video") => kind === "post" ? s.data.postLikes.includes(id)
       : ep !== undefined && s.data.likeEpisodes ? s.data.likeEpisodes.some(row => row.video_id === id && row.ep === ep) : s.data.likes.includes(id),
@@ -408,5 +419,5 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     toggleLikeLocal: (id: number) => localToggle("likes", id),
     toggleFavLocal: (id: number) => localToggle("favs", id),
     toggleFollowLocal: (id: number) => localToggle("follows", id),
-  }), [rev, drawTick, setUser, restoreSession, generation, logout, syncAccount, setCollected, setLiked, setFollowing, addHistory, clearHistory, localToggle]);
+  }), [rev, drawTick, setUser, restoreSession, generation, logout, retrySync, setCollected, setLiked, setFollowing, addHistory, clearHistory, localToggle]);
 }

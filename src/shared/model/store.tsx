@@ -292,19 +292,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let request = 0;
     let active = true;
-    const readBoot = () => {
+    let retryNeeded = false;
+    let reading = false;
+    let timer: number | undefined;
+    const readBoot = (verifySession = false) => {
       const current = ++request;
       const generation = accountRef.current.generation();
-      void api.boot().then((r) => {
+      window.clearTimeout(timer);
+      reading = true;
+      void api.boot(verifySession).then((r) => {
         if (!active || current !== request) return;
-        accountRef.current.restoreSession(r.user && (r.user as User).id ? r.user as User : null, r.base || "", generation);
+        const pending = r.pending_session;
+        retryNeeded = !!pending && generation === accountRef.current.generation();
+        accountRef.current.restoreSession(r.user ?? pending?.user ?? null, pending?.origin ?? r.base ?? "", generation, !!pending, r.library_origin);
         if (typeof r.strict_security === "boolean") {
           setStrictSecurityState(r.strict_security);
           setHtmlStrictSecurity(r.strict_security);
           setStrictSecurityReady(true);
         }
         setCliRelaxed(!!r.cli_relaxed);
-      }).catch(() => { /* 离线也能用 */ });
+      }).catch(() => {
+        if (active && current === request) retryNeeded = true;
+      }).finally(() => {
+        if (!active || current !== request) return;
+        reading = false;
+        if (retryNeeded) timer = window.setTimeout(retry, verifySession ? 60_000 : 0);
+      });
+    };
+    const retry = () => {
+      if (retryNeeded && !reading && navigator.onLine !== false && document.visibilityState !== "hidden") readBoot(true);
     };
     readBoot();
     // 切线/代理变化后由 boot 决定会话：可信线路间后端保留登录（rebase），
@@ -312,10 +328,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const changed = () => { readBoot(); };
     window.addEventListener("hg:line-changed", changed);
     window.addEventListener("hg:proxy-changed", changed);
+    window.addEventListener("online", retry);
+    window.addEventListener("hg:session-retry", retry);
+    document.addEventListener("visibilitychange", retry);
     return () => {
       active = false;
+      window.clearTimeout(timer);
       window.removeEventListener("hg:line-changed", changed);
       window.removeEventListener("hg:proxy-changed", changed);
+      window.removeEventListener("online", retry);
+      window.removeEventListener("hg:session-retry", retry);
+      document.removeEventListener("visibilitychange", retry);
     };
   }, []);
 

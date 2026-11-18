@@ -7,11 +7,9 @@
 origin”，不负责 HTTP 客户端、代理、DNS 固定或媒体字节（见
 [network-proxy-media.md](network-proxy-media.md)）。
 
-凭据只属于 origin：`token()`/`user()`/`snapshot()` 按 origin 精确匹配。上游各可信线路共享同一
-账号体系，因此固定线路与可信镜像之间的切换经 `SessionStore::rebase_if_trusted()` 把会话 origin
-改写为新线路（revision 递增并落盘），登录得以保留；任一端不可信（自定义线路、未被发布页确认的
-镜像）时仍然 `SessionStore.clear()`，旧 token 不会跟着地址走。镜像只有在被可信发布页实际解析
-出来后才获得携带凭据与参与 rebase 的资格；`line.json` 里的历史地址本身不授予信任。
+会话绑定登录时的 origin。固定线路与发布页在本次运行中确认的镜像共享账号体系，
+两端验证通过后才能把会话迁移到新 origin。自动选线可能先于发布页验证完成，此时保留原线路的会话，
+新线路只接收匿名请求。切入或切出自定义站点会清除会话，重复保存同一自定义配置保留登录。
 
 ## 事实来源
 
@@ -54,9 +52,8 @@ origin”，不负责 HTTP 客户端、代理、DNS 固定或媒体字节（见
 4. 手动选择固定线路走 `line_set`；自定义线路走 `line_custom_set`。二者都先经过
    `normalize_base()`（HTTPS、无路径/查询/片段、拒绝内网），非自定义线路还必须属于 `FIXED`
    或 `is_trusted_mirror()`。成功后写入 `line.json`（临时文件 + rename），刷新 HTTP 客户端；
-   地址变化时 `line_set` 先尝试 `rebase_if_trusted()`（两端都是固定/可信镜像则保留会话），
-   失败才 `state.session.clear()`；`line_custom_set` 永远清空——自定义站点不参与可信 rebase，
-   即使旧 origin 可信也不能把 token 带过去。
+   `apply_line()` 在选线锁内协调线路与会话。地址或自定义标记发生变化时推进会话代次，
+   跨自定义边界时清除会话。普通线路间暂未能验证旧镜像时保留原始凭据。
 5. 自动选线由 `autoLine.ts` 驱动：启动、上线、页面重新可见、`api_*` 连续两次网络失败或
    手动开启都会触发体检。`line_health` 只探当前线路；连续两次失败才 `line_auto`，每 15 秒最多
    主动选一次，定时体检按 60/120/300 秒退避。
@@ -68,11 +65,9 @@ origin”，不负责 HTTP 客户端、代理、DNS 固定或媒体字节（见
    `reason="all-down"`、`base=""`。前端收到 all-down 只提示一次并保持当前线路，不盲切
    `.ai`。`line_auto` 在真正落盘前重新检查 `LINE_SELECTION` 代次，用户手动操作会让旧探测作废。
 8. 当前是镜像时，健康检查会调用 `line_try_main()`：只探固定线路 1，通了就切回，代价是一个
-   请求；两端可信时会话经 rebase 保留，旧 origin 不可信（如自定义线路）则清空。切回后
-   `hg:line-changed` 让列表和详情按新 `lineEpoch` 重新读取。`line_auto` 落盘切换时同样执行
-   rebase-or-clear；`app_boot` 在当前 origin 查不到会话、但存有旧 origin 会话时，同时对旧 origin
-   与当前 origin 做 `verify_published_origin()` 可信刷新（填充 `TRUSTED_MIRRORS`），再尝试 rebase，覆盖
-   镜像登录后重启回固定线路或切新镜像的场景。
+   请求。切回后 `hg:line-changed` 让列表和详情按新 `lineEpoch` 重新读取。
+   `app_boot` 对照已存会话恢复账号，跨普通线路时重新核验两个 origin，并在会话锁内核对代次。
+   网络恢复、应用回到前台或手动重试均可再次验证。
 9. 带 token 的业务请求在严格模式下还要过 `trusted_auth_origin()`：固定线路、本次进程内由发布页
    确认过的镜像，或用户显式保存的自定义线路。已落盘但尚未验证的镜像会触发
    `verify_published_origin()`；验证失败只允许游客浏览，登录/注册被拒绝。
@@ -82,7 +77,7 @@ origin”，不负责 HTTP 客户端、代理、DNS 固定或媒体字节（见
 - 启动：无 `line.json` 或内容损坏 → `DEFAULT_BASE`；有效 v2 自定义线路 → 恢复
   `{base, custom:true}`；旧格式 → 只恢复地址，`custom=false`。
 - 选择：手动点击 → `line_set`/`line_custom_set` → 校验 → 写临时文件 → rename →
-  更新内存 `BASE` → `refresh_client()` → 地址变化时清会话 → UI 收到 `hg:line-changed`。
+  更新内存 `BASE` → `refresh_client()` → 按来源恢复或隔离会话 → UI 收到 `hg:line-changed`。
 - 自动：`health.ok` → 重置失败计数并延长体检间隔；连续两次不健康 → `auto_pick`；
   有赢家 → 切换并回到 60 秒；all-down → 保持当前线路并 10 秒后重试。
 - 取消：`line_cancel` 只增加代次，不修改线路；正在探测的 `line_auto` 返回

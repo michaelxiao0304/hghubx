@@ -32,30 +32,33 @@ pub async fn line_state() -> Result<Value, String> {
     }))
 }
 
+// Call with LINE_SELECTION locked so the saved line and session transition agree.
+fn apply_line(state: &Api, url: &str, custom: bool) -> Result<String, String> {
+    let previous = base();
+    let was_custom = crate::net::is_custom_line();
+    let next = if custom { crate::net::set_custom_base(url)? } else { crate::net::set_base(url)? };
+    let now_custom = crate::net::is_custom_line();
+    if previous != next || was_custom != now_custom {
+        state.session.line_changed(&next, was_custom || now_custom, crate::session::rebase_trust);
+    }
+    crate::net::refresh_client();
+    Ok(next)
+}
+
 /// 手动切换线路：只允许固定线路或刚从可信发布页读取的镜像。
-/// 可信↔可信切换保留会话（同一账号体系）；任一端不可信则清空。
+/// 可信↔可信切换保留会话（同一账号体系）；跨自定义站点时清空，待验证镜像保留原会话。
 #[tauri::command]
 pub async fn line_set(state: State<'_, Api>, url: String) -> Result<String, String> {
     let mut generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
     *generation = generation.wrapping_add(1);
-    let previous = base();
-    let applied = crate::net::set_base(&url)?;
-    crate::net::refresh_client();
-    if previous != applied { state.session.rebase_or_clear(&applied, crate::session::rebase_trust); }
-    Ok(applied)
+    apply_line(&state, &url, false)
 }
 
 #[tauri::command]
 pub async fn line_custom_set(state: State<'_, Api>, url: String) -> Result<Value, String> {
     let mut generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
     *generation = generation.wrapping_add(1);
-    let previous = base();
-    let applied = crate::net::set_custom_base(&url)?;
-    crate::net::refresh_client();
-    // Custom lines never join the trusted rebase: even a trusted old origin
-    // must not hand its token to a user-specified site.
-    let _ = previous;
-    state.session.clear();
+    let applied = apply_line(&state, &url, true)?;
     Ok(json!({ "base": applied, "custom": crate::net::is_custom_line() }))
 }
 
@@ -108,7 +111,7 @@ pub async fn line_probe(urls: Vec<String>) -> Result<Value, String> {
 /// 自动选线：探测主站与可信发布页镜像，全部失败时保持当前线路。
 ///
 /// 切换两端都可信（固定线路或本进程发布页确认的镜像）时保留会话并 rebase origin；
-/// 旧 origin 不可信（如自定义线路）时清空会话，绝不把 token 带给新站点。
+/// 镜像等待验证时保留独立会话；跨自定义站点时清空。
 #[tauri::command]
 pub async fn line_auto(state: State<'_, Api>) -> Result<Value, String> {
     let selection = begin_line_selection()?;
@@ -125,10 +128,7 @@ pub async fn line_auto(state: State<'_, Api>) -> Result<Value, String> {
     if *generation == selection
         && pick.get("reason").and_then(Value::as_str) != Some("all-down")
         && !chosen.is_empty() && chosen != previous {
-        let next = crate::net::set_base(&chosen)?;
-        crate::net::refresh_client();
-        switched = next != previous;
-        if switched { state.session.rebase_or_clear(&next, crate::session::rebase_trust); }
+        switched = apply_line(&state, &chosen, false)? != previous;
     }
     Ok(json!({
         "previous": previous,
@@ -154,10 +154,7 @@ pub async fn line_try_main(state: State<'_, Api>) -> Result<Value, String> {
     if *generation == selection && probe.get("ok").and_then(Value::as_bool).unwrap_or(false) {
         let chosen = probe.get("base").and_then(Value::as_str).unwrap_or_default();
         if !chosen.is_empty() && chosen != previous {
-            let next = crate::net::set_base(chosen)?;
-            crate::net::refresh_client();
-            switched = next != previous;
-            if switched { state.session.rebase_or_clear(&next, crate::session::rebase_trust); }
+            switched = apply_line(&state, chosen, false)? != previous;
         }
     }
     Ok(json!({
