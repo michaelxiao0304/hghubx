@@ -1,6 +1,6 @@
 // Local-only headless playback checks. No upstream APIs, credentials or Tauri IPC are used.
 import assert from "node:assert/strict";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { appendFileSync } from "node:fs";
@@ -15,16 +15,17 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const scriptScenarios = {
   tv: { script: "test-tv-remote.mjs", timeout: 480000, metrics: { transport: "mock Tauri IPC; actual TV bootstrap, worker, library and player" } },
 };
+const ALL_SCENARIOS = ["seek", "legacy", "lifecycle", "gesture", "proxy", "portrait-fit", "rotation", "resume", "feedback", "ios-native", "recovery", "review", "tv"];
 const { values: args } = parseArgs({ options: {
   "media-dir": { type: "string" }, output: { type: "string" }, "browser-executable": { type: "string" },
   scenarios: { type: "string", default: "seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,feedback" }, help: { type: "boolean" },
 } });
 if (args.help) {
-  console.log("pnpm test:playback [--media-dir DIR] [--output NEW_DIR] [--browser-executable PATH] [--scenarios seek,legacy,lifecycle,gesture,proxy,portrait-fit,rotation,resume,feedback,ios-native,recovery,review,tv]");
+  console.log(`pnpm test:playback [--media-dir DIR] [--output NEW_DIR] [--browser-executable PATH] [--scenarios all|${ALL_SCENARIOS.join(",")}]`);
   process.exit(0);
 }
-const scenarios = args.scenarios.split(",");
-assert(scenarios.length && scenarios.every(s => ["seek", "legacy", "lifecycle", "gesture", "proxy", "portrait-fit", "rotation", "resume", "feedback", "ios-native", "recovery", "review", "tv"].includes(s)), "Unknown scenario");
+const scenarios = args.scenarios === "all" ? ALL_SCENARIOS : args.scenarios.split(",");
+assert(scenarios.length && scenarios.every(s => ALL_SCENARIOS.includes(s)), "Unknown scenario");
 const output = resolve(args.output || join(root, "test-results", "playback", new Date().toISOString().replace(/[:.]/g, "-")));
 await mkdir(dirname(output), { recursive: true });
 await mkdir(output); // Refuse to overwrite artifacts from an earlier run.
@@ -529,6 +530,11 @@ async function proxyRecoveryCheck(page) {
       await page.evaluate(() => window.dispatchEvent(new Event("hg:proxy-changed")));
       await page.waitForFunction(before => window.playerSeekFixture.logs.filter(e => e.event === "proxy.restored").length > before, playingRetries);
       await page.waitForFunction(time => !document.querySelector("video").paused && document.querySelector("video").currentTime >= time, playingAt);
+      if (!legacy) {
+        await page.evaluate(() => window.dispatchEvent(new Event("hg:line-changed")));
+        assert.equal(await page.locator(".spinner").count(), 0, "Background line switch must not leave a stuck loading spinner on a healthy playing stream");
+        assert(!(await page.locator("video").evaluate(v => v.paused)), "Background line switch must keep healthy stream playing");
+      }
       const logs = await getLogs(page);
       const current = logs.filter(e => e.data.video_id).map(e => e.data.video_id);
       assert(current.every(id => id === 991), "Proxy save must retain current video");
@@ -671,7 +677,7 @@ async function feedbackChecks(page) {
 }
 
 try {
-  if (scenarios.some(name => name !== "ios-native" && name !== "tv")) {
+  if (scenarios.some(name => name !== "ios-native" && name !== "tv" && name !== "review")) {
     let mediaDir = args["media-dir"] && resolve(args["media-dir"]);
     if (!mediaDir) {
       temporaryMedia = await mkdtemp(join(tmpdir(), "hghubx-playback-")); mediaDir = temporaryMedia;
@@ -744,6 +750,33 @@ try {
       }
       continue;
     }
+    if (name === "review") {
+      const result = { name, status: "running", started: new Date().toISOString() }; report.cases.push(result);
+      let stdout = "", stderr = "";
+      try {
+        const child = await promisify(execFile)(process.execPath, [join(root, "scripts/test-round-review.mjs")], {
+          cwd: root, encoding: "utf8", timeout: 180000, maxBuffer: 4 * 1024 * 1024,
+          env: { ...process.env, ...(args["browser-executable"] ? { BROWSER_EXECUTABLE: args["browser-executable"] } : {}) },
+        });
+        stdout = child.stdout; stderr = child.stderr;
+        result.metrics = { focused_checks: true };
+        result.status = "passed"; console.log(`PASS ${name}: ${JSON.stringify(result.metrics)}`);
+      } catch (error) {
+        stdout = error.stdout || ""; stderr = error.stderr || "";
+        result.status = "failed"; result.error = error.message;
+        result.exit_code = typeof error.code === "number" ? error.code : null;
+        result.signal = error.signal || null;
+        console.error(`FAIL ${name}: ${error.message}`);
+      } finally {
+        if (stdout) process.stdout.write(stdout);
+        if (stderr) process.stderr.write(stderr);
+        await writeFile(join(dir, "stdout.log"), stdout);
+        await writeFile(join(dir, "stderr.log"), stderr);
+        result.finished = new Date().toISOString();
+        await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
+      }
+      continue;
+    }
     const mobileContext = ["gesture", "portrait-fit", "rotation", "resume"].includes(name);
     const context = await browser.newContext({ ...(mobileContext ? {userAgent:"Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_1 like Mac OS X) AppleWebKit/605.1.15 Version/17.1 Mobile/15E148 Safari/604.1",hasTouch:true} : {}), viewport: ["portrait-fit", "rotation", "resume"].includes(name) ? { width: 390, height: 844 } : { width: 1000, height: 900 } });
     await context.exposeBinding("collectPlaybackLogs", (_source, entries) => {
@@ -768,20 +801,6 @@ try {
     const result = { name, status: "running", started: new Date().toISOString() }; report.cases.push(result);
     let deadline;
     try {
-      if (name === "review") {
-        result.metrics = await new Promise((resolve, reject) => {
-          const child = spawn(process.execPath, [join(root, "scripts/test-round-review.mjs")], {
-            cwd: root,
-            env: { ...process.env, BROWSER_EXECUTABLE: args["browser-executable"] || chromium.executablePath() },
-            stdio: "inherit",
-          });
-          child.once("error", reject);
-          child.once("close", code => code === 0 ? resolve({ focused_checks: true }) : reject(new Error(`Round review checks exited ${code}`)));
-        });
-        result.status = "passed";
-        console.log(`PASS ${name}: ${JSON.stringify(result.metrics)}`);
-        continue;
-      }
       const action = name === "feedback" ? feedbackChecks(page) : name === "rotation" ? rotationChecks(page) : name === "resume" ? resumeChecks(page) : name === "recovery" ? explicitRecoveryCheck(page) : name === "proxy" ? proxyRecoveryCheck(page) : name === "gesture" ? gestureChecks(page) : name === "portrait-fit" ? portraitFitChecks(page) : name === "seek" || name === "legacy" ? seekChecks(page, name === "legacy") : lifecycleCheck(page);
       result.metrics = await Promise.race([action, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Scenario exceeded 45 seconds")), 45000); })]);
       assert.deepEqual(pageErrors, [], "Browser script errors");

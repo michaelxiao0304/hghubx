@@ -307,10 +307,8 @@ export async function selfTest(): Promise<string> {
       const m = keyLine.match(/URI="([^"]+)"/);
       if (m) {
         const rustUrl = m[1];
-        steps.push(`rustUrl:${rustUrl.slice(0, 60)}`);
-        // A/B：用 JS 重新编码同一条上游地址
+        // A/B：用 JS 重新编码同一条上游地址（不在日志中输出原始 key URL）
         const inner = decodeURIComponent(rustUrl.split("?u=")[1] || "");
-        steps.push(`inner:${inner.slice(0, 50)}`);
         try {
           const rk = await fetch(rustUrl);
           const bk = await rk.arrayBuffer();

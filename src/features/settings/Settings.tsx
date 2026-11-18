@@ -137,7 +137,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
           </>)}
 
           {section("播放", <>
-            <div className="flex items-center gap-3 px-3.5 py-3">
+            <div className="ios-settings-row">
               <span className="ios-setting-icon"><IVolMute size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">启动时静音</div>
@@ -145,7 +145,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
               </div>
               <Toggle desktop on={muteOnStartup} onChange={setMuteOnStartup} label="启动时静音" />
             </div>
-            <div className="flex items-center gap-3 px-3.5 py-3">
+            <div className="ios-settings-row">
               <span className="ios-setting-icon"><IBoltF size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">优先高清</div>
@@ -153,7 +153,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
               </div>
               <Toggle desktop on={preferHevc} onChange={setPreferHevc} label="优先高清" />
             </div>
-            {isMobile && <div className="flex flex-wrap items-center gap-3 px-3.5 py-3">
+            {isMobile && <div className="ios-settings-row flex-wrap">
               <span className="ios-setting-icon"><ICompress size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">全屏无操作自动隐藏控件</div>
@@ -170,14 +170,14 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
           {section("内容偏好", <ContentPreferencesSettings />)}
 
           {section("本地数据", <>
-            <div className="flex items-center gap-3 px-3.5 py-3">
+            <div className="ios-settings-row">
               <span className="ios-setting-icon"><IHeart size={16} /></span>
               <div className="flex-1">
                 <div className="text-[14px] text-on">本地片库</div>
                 <div className="text-[12px] text-mut">{favs.length} 部收藏 · {history.length} 条观看记录</div>
               </div>
             </div>
-            <Button onClick={() => { setClearError(""); setClearOpen(true); }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
+            <Button onClick={() => { setClearError(""); setClearOpen(true); }} className="ios-settings-row text-left pressable">
               <span className="ios-setting-icon"><IBroom size={16} /></span>
               <div className="flex-1">
                 <div className="text-[14px] text-on">清理缓存</div>
@@ -188,7 +188,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
 
           {section("网络", <>
             <ProxySettings />
-            <Button onClick={() => setLineOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
+            <Button onClick={() => setLineOpen(true)} className="ios-settings-row text-left pressable">
               <span className="ios-setting-icon"><IBoltF size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">播放源</div>
@@ -196,7 +196,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
               </div>
               <IChevR size={15} className="text-mut" />
             </Button>
-            <div className="flex items-center gap-3 px-3.5 py-3">
+            <div className="ios-settings-row">
               <span className="ios-setting-icon"><IRefresh size={15} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">自动选择线路</div>
@@ -208,7 +208,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
                 toast(on ? "已开启自动选择线路" : "已关闭自动选线，可手动选择播放源", "info");
               }} />
             </div>
-            <div className="flex items-center gap-3 px-3.5 py-3">
+            <div className="ios-settings-row">
               <span className="ios-setting-icon"><ILockF size={15} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">严格安全模式</div>
@@ -259,7 +259,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
               } finally {
                 setDiagnosing(false);
               }
-            }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
+            }} className="ios-settings-row text-left pressable disabled:opacity-60">
               <span className="ios-setting-icon"><ILink size={16} /></span>
               <div className="flex-1">
                 <div className="text-[14px] text-on">{diagnosing ? "正在诊断…" : "网络诊断"}</div>
@@ -270,7 +270,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
           </>)}
 
           {section("播放诊断", <>
-            <div className="flex items-center gap-3 px-3.5 py-3">
+            <div className="ios-settings-row">
               <span className="ios-setting-icon"><IInfo size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">播放诊断日志</div>
@@ -285,7 +285,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
               try { await copyPlaybackLog(); toast("播放诊断日志已复制", "ok"); }
               catch (e) { toast((e as Error).message || "复制日志失败", "info"); }
               finally { setCopyingLog(false); }
-            }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
+            }} className="ios-settings-row text-left pressable disabled:opacity-60">
               <span className="ios-setting-icon"><ILink size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">{copyingLog ? "正在复制…" : "复制播放诊断日志"}</div>
@@ -296,7 +296,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
             {playbackLog.path && <details className="ios-settings-log-path text-[12px] text-mut"><summary className="cursor-pointer py-3">查看日志保存位置</summary><p className="break-all select-text pb-3">{playbackLog.path}</p></details>}
           </>)}
           {section("其他", <>
-            <Button onClick={checkUpdate} disabled={checking} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
+            <Button onClick={checkUpdate} disabled={checking} className="ios-settings-row text-left pressable disabled:opacity-60">
               <span className="ios-setting-icon">{checking ? <Loader label="正在检查更新" className="size-4" /> : <IRefresh size={16} />}</span>
               <div className="flex-1">
                 <div className="text-[14px] text-on">检查更新</div>
@@ -304,7 +304,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
               </div>
               <IChevR size={15} className="text-mut" />
             </Button>
-            <Button onClick={() => setAgreementOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
+            <Button onClick={() => setAgreementOpen(true)} className="ios-settings-row text-left pressable">
               <span className="ios-setting-icon"><ILockF size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[14px] text-on">使用条款与免责声明</div>
@@ -312,7 +312,7 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
               </div>
               <IChevR size={15} className="text-mut" />
             </Button>
-            <Button onClick={() => setAbout(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
+            <Button onClick={() => setAbout(true)} className="ios-settings-row text-left pressable">
               <span className="ios-setting-icon"><IInfo size={16} /></span>
               <div className="flex-1">
                 <div className="text-[14px] text-on">关于 HGhubX</div>

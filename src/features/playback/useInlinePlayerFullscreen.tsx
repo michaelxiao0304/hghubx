@@ -1,15 +1,27 @@
-import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { isMobile } from "../../shared/api/api";
 import { registerOverlayBack } from "../../shared/lib/back";
+import {
+  exitDocumentFullscreen, getFullscreenElement, onFullscreenChange,
+  requestElementFullscreen, setTauriWindowFullscreen,
+} from "../../shared/lib/fullscreen";
 
 type Activity = {
   play: (source: string, automatic?: boolean) => void;
   isActive: () => boolean;
   isPlayWanted: () => boolean;
 };
-type Options = { active: boolean; src: string; videoRef: RefObject<HTMLVideoElement | null>; activity: Activity };
+type Options = {
+  active: boolean;
+  src: string;
+  scopeKey?: string | number;
+  videoRef: RefObject<HTMLVideoElement | null>;
+  activity: Activity;
+};
 
 /** One persistent portal target keeps the media element and HLS instance alive in both layouts. */
-export function useInlinePlayerFullscreen({ active, src, videoRef, activity }: Options) {
+export function useInlinePlayerFullscreen({ active, src, scopeKey, videoRef, activity }: Options) {
   const slotRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [host] = useState(() => {
@@ -19,25 +31,30 @@ export function useInlinePlayerFullscreen({ active, src, videoRef, activity }: O
   });
   const [fallback, setFallback] = useState(false);
   const [nativeFull, setNativeFull] = useState(false);
-  const latest = useRef({ active, src, activity }); latest.current = { active, src, activity };
+  const resolvedScope = scopeKey ?? src;
+  const latest = useRef({ active, src, resolvedScope, activity });
+  latest.current = { active, src, resolvedScope, activity };
   const mounted = useRef(false);
   const generation = useRef(0);
   const pending = useRef(false);
   const nativeIntent = useRef(false);
   const fallbackRef = useRef(false);
   const restoreFrame = useRef(0);
-  const scope = useRef({ active, src });
+  const scope = useRef({ active, resolvedScope });
 
   const exitNative = useCallback((target = wrapRef.current) => {
-    if (!target || document.fullscreenElement !== target) return;
-    try { void document.exitFullscreen?.().catch(() => {}); } catch { /* A detached WebView can reject synchronously. */ }
+    if (!target || getFullscreenElement() !== target) return;
+    try { void exitDocumentFullscreen().catch(() => {}); } catch { /* A detached WebView can reject synchronously. */ }
   }, []);
 
   const close = useCallback(() => {
     generation.current++;
     pending.current = false;
     nativeIntent.current = false;
-    fallbackRef.current = false;
+    if (fallbackRef.current) {
+      fallbackRef.current = false;
+      if (!isMobile) setTauriWindowFullscreen(false);
+    }
     setFallback(false);
     exitNative();
   }, [exitNative]);
@@ -46,29 +63,29 @@ export function useInlinePlayerFullscreen({ active, src, videoRef, activity }: O
     if (!mounted.current || !latest.current.active) return;
     const target = wrapRef.current;
     if (!target) return;
-    if (fallbackRef.current || document.fullscreenElement === target || pending.current) { close(); return; }
+    if (fallbackRef.current || getFullscreenElement() === target || pending.current) { close(); return; }
     const token = ++generation.current;
-    const source = latest.current.src;
+    const scopeId = latest.current.resolvedScope;
     pending.current = true;
     nativeIntent.current = true;
-    const current = () => mounted.current && generation.current === token && latest.current.active && latest.current.src === source;
+    const current = () => mounted.current && generation.current === token && latest.current.active && latest.current.resolvedScope === scopeId;
     const useFallback = () => {
       if (!current()) return;
       nativeIntent.current = false;
       fallbackRef.current = true;
       setFallback(true);
       setNativeFull(false);
+      if (!isMobile) setTauriWindowFullscreen(true);
     };
     void (async () => {
       try {
-        if (typeof target.requestFullscreen !== "function") { useFallback(); return; }
-        await target.requestFullscreen();
+        await requestElementFullscreen(target);
         if (!current()) {
           // Do not close a newer request on this same player.
           if (!nativeIntent.current) exitNative(target);
           return;
         }
-        if (document.fullscreenElement === target) setNativeFull(true);
+        if (getFullscreenElement() === target) setNativeFull(true);
         else useFallback();
       } catch { useFallback(); }
       finally { if (generation.current === token) pending.current = false; }
@@ -79,28 +96,32 @@ export function useInlinePlayerFullscreen({ active, src, videoRef, activity }: O
     mounted.current = true;
     const target = wrapRef.current;
     const onFullscreen = () => {
-      const own = !!wrapRef.current && document.fullscreenElement === wrapRef.current;
+      const own = !!wrapRef.current && getFullscreenElement() === wrapRef.current;
       if (own && (!latest.current.active || !nativeIntent.current)) { exitNative(); return; }
       setNativeFull(own);
       if (!own && !pending.current) nativeIntent.current = false;
     };
-    document.addEventListener("fullscreenchange", onFullscreen);
+    const removeFullscreen = onFullscreenChange(onFullscreen);
     return () => {
       mounted.current = false;
       generation.current++;
       pending.current = false;
       nativeIntent.current = false;
+      if (fallbackRef.current) {
+        fallbackRef.current = false;
+        if (!isMobile) setTauriWindowFullscreen(false);
+      }
       cancelAnimationFrame(restoreFrame.current);
       exitNative(target);
-      document.removeEventListener("fullscreenchange", onFullscreen);
+      removeFullscreen();
       host.remove();
     };
   }, [host, exitNative]);
 
   useLayoutEffect(() => {
-    if (scope.current.src !== src || !active) close();
-    scope.current = { active, src };
-  }, [active, src, close]);
+    if (scope.current.resolvedScope !== resolvedScope || !active) close();
+    scope.current = { active, resolvedScope };
+  }, [active, resolvedScope, close]);
 
   useLayoutEffect(() => {
     const slot = slotRef.current;
@@ -113,9 +134,10 @@ export function useInlinePlayerFullscreen({ active, src, videoRef, activity }: O
       if (expanded && value) host.style.setProperty(name, value);
       else host.style.removeProperty(name);
     }
+    // 老 WebView 不认识 inset 简写与 dvh；用四边写法并探测 dvh（#138 兼容移植）。
     Object.assign(host.style, expanded
-      ? { position: "fixed", inset: "0", width: "100%", height: "100dvh", zIndex: "90", background: "#000", overflow: "hidden" }
-      : { position: "relative", inset: "", width: "100%", height: "100%", zIndex: "", background: "", overflow: "" });
+      ? { position: "fixed", top: "0", right: "0", bottom: "0", left: "0", width: "100%", height: CSS.supports("height", "100dvh") ? "100dvh" : "100vh", zIndex: "90", background: "#000", overflow: "hidden" }
+      : { position: "relative", top: "", right: "", bottom: "", left: "", width: "100%", height: "100%", zIndex: "", background: "", overflow: "" });
     if (host.parentNode === destination) return;
     const video = videoRef.current;
     const playing = !!video && !video.paused && latest.current.activity.isPlayWanted();
@@ -133,6 +155,32 @@ export function useInlinePlayerFullscreen({ active, src, videoRef, activity }: O
   }, [active, fallback, host, src, videoRef]);
 
   const full = active && (fallback || nativeFull);
+  useEffect(() => {
+    if (!isMobile || !full) return;
+    let locked = false;
+    const syncOrientation = () => {
+      const v = videoRef.current;
+      if (!v || v.videoHeight <= 0 || v.videoWidth <= v.videoHeight) return;
+      locked = true;
+      try { void invoke("set_orientation", { landscape: true }).catch(() => {}); } catch { /* ignore */ }
+      try {
+        (screen.orientation as unknown as { lock?: (o: string) => Promise<void> })?.lock?.("landscape")?.catch(() => {});
+      } catch { /* ignore */ }
+    };
+    syncOrientation();
+    const v = videoRef.current;
+    v?.addEventListener("loadedmetadata", syncOrientation);
+    return () => {
+      v?.removeEventListener("loadedmetadata", syncOrientation);
+      if (locked) {
+        try { void invoke("set_orientation", { landscape: false }).catch(() => {}); } catch { /* ignore */ }
+        try {
+          (screen.orientation as unknown as { unlock?: () => void })?.unlock?.();
+        } catch { /* ignore */ }
+      }
+    };
+  }, [full, src, videoRef]);
+
   useLayoutEffect(() => {
     if (!full) return;
     const removeBack = registerOverlayBack(() => { close(); return true; });

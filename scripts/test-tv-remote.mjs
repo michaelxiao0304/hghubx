@@ -2,7 +2,7 @@
 // Real TV bootstrap/components/Worker/IndexedDB. All IPC/media remain fixtures.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,7 +114,13 @@ try {
     optimizeDeps: { include: ["pinyin-pro"] },
     server: { host: "127.0.0.1", port: 0, strictPort: false, hmr: false, open: false } });
   await vite.listen(); origin = `http://127.0.0.1:${vite.httpServer.address().port}`;
-  browser = await chromium.launch({ headless: true, executablePath: process.env.BROWSER_EXECUTABLE || chromium.executablePath(), args: ["--autoplay-policy=no-user-gesture-required"] });
+  let executablePath = process.env.BROWSER_EXECUTABLE;
+  if (!executablePath) {
+    for (const candidate of ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]) {
+      if (await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+    }
+  }
+  browser = await chromium.launch({ headless: true, executablePath: executablePath || chromium.executablePath(), args: ["--autoplay-policy=no-user-gesture-required"] });
   report.browser = browser.version();
   await scenario("history-shelf-width-loading-ready", async () => {
     const { page } = await open({ fixture: { heldDetailIds: [1, 2, 3], legacy: { history: [1, 2, 3].map((id, index) => ({ id, ep: 1, t: 5, dur: 60, at: 30 - index })) } },
@@ -164,10 +170,10 @@ try {
   await scenario("agreement-gate-single-controller", async () => {
     const { page } = await open({ accepted: false });
     await page.locator('[data-tv-focus="agreement-checkbox"]').waitFor();
-    // This tree's index.html has no startup watchdog, so __HG_STARTUP__ is
-    // undefined and markStartupReady is a no-op by design. The gate contract
-    // here is: mounting the gate IS startup success — no content IPC, exactly
-    // one keyboard listener and one native back subscription before acceptance.
+    // index.html carries the ES5 startup watchdog again (#138); the fixture
+    // counts ready() calls through __HG_STARTUP__. The gate contract here is:
+    // mounting the gate IS startup success — no content IPC, exactly one
+    // keyboard listener and one native back subscription before acceptance.
     const pre = await page.evaluate(() => ({ ready: window.__tvFixture.startupReady, keys: window.__tvFixture.keyboardListeners,
       native: window.__tvFixture.nativeListeners, requests: window.__tvFixture.calls.filter(call => /^(api_|app_boot|line_auto|line_health)/.test(call.command)) }));
     assert.equal(pre.keys, 1); assert.equal(pre.native, 1); assert.deepEqual(pre.requests, []);

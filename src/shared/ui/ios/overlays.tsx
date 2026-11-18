@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef,
 import { createPortal } from "react-dom";
 import { Button } from "./controls";
 import { registerOverlayBack } from "../../lib/back";
+import { getFullscreenElement } from "../../lib/fullscreen";
 
 type Layer = { token: symbol; ancestors: symbol[]; element: HTMLElement; panel: HTMLElement; previous: HTMLElement | null; lastFocus: HTMLElement | null };
 const LayerContext = createContext<symbol[]>([]);
@@ -71,7 +72,7 @@ function DialogFrame({ open, onClose, children, kind, width, label, z }: {
   const descendants = useMemo(() => [...ancestors, token], [ancestors, token]);
   const close = useRef(onClose);
   close.current = onClose;
-  const host = document.fullscreenElement ?? document.getElementById("root") ?? document.body;
+  const host = getFullscreenElement() ?? document.getElementById("root") ?? document.body;
   useEffect(() => {
     if (open) { setMounted(true); return; }
     const timeout = setTimeout(() => setMounted(false), motion ? 180 : 0);

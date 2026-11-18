@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && tsc --project tsconfig.tests.json && vite build",
+    "build": "tsc --noEmit && tsc --project tsconfig.node.json && tsc --project tsconfig.tests.json && vite build",
     "build:tv": "node scripts/build-android-tv.mjs",
     "dev:tv": "node scripts/build-android-tv.mjs --dev",
     "preview": "vite preview",
@@ -46,14 +46,12 @@
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
+    "lightningcss": "1.30.2",
     "playwright-core": "1.63.0",
+    "postcss": "8.5.6",
+    "postcss-preset-env": "11.6.2",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "vite": "7.3.2"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   }
 }
