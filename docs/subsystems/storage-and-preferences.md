@@ -146,7 +146,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 pnpm test:playback --scenarios tv
 ```
 
-`test-storage-migration` 覆盖旧键、写/删失败、损坏 JSON 和一次性 swipe 迁移；
+`test-storage-migration` 覆盖旧键、写/删失败、损坏 JSON 和一次性 swipe 迁移，也验证可信切线合并两边的观看秒数与收藏集数标记。同一收藏保留较高的已知集数，取消收藏时一并移除对应标记。
 `test-account-sync-empty-state` 覆盖同步中、失败、缺收藏字段、历史失败等“未知”状态，
 账号 401 静默重登成功与失败，以及返回收藏页后已缓存条目出现新集的情况。
 `src-tauri/src/session.rs` 的 `silent_login_preserves_existing_session_on_user_mismatch` 覆盖重登接口返回另一个账号时

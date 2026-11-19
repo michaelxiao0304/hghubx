@@ -267,11 +267,17 @@ try {
     assert.deepEqual((await snapshot(page)).favs, [], "Same ID on another origin does not merge an ordinary login");
     await page.evaluate(() => {
       window.storageMigrationFixture.toggleFavLocal(777);
+      window.storageMigrationFixture.toggleFavLocal(700);
+      window.storageMigrationFixture.ackFavoriteEpisodes(777, 8);
+      window.storageMigrationFixture.ackFavoriteEpisodes(700, 9);
       window.storageMigrationFixture.addHistory(777, 3, 18, 100);
     });
     await page.evaluate(() => window.storageMigrationFixture.setUser({ id: 7 }, "https://account-a.invalid"));
     await page.waitForFunction(() => !!window.storageMigrationFixture.accountSync.error);
-    await page.evaluate(() => window.storageMigrationFixture.addHistory(700, 4, 42, 100));
+    await page.evaluate(() => {
+      window.storageMigrationFixture.ackFavoriteEpisodes(700, 6);
+      window.storageMigrationFixture.addHistory(700, 4, 42, 100);
+    });
     const beforeRebase = (await storage(page)).hghubx_accounts_v1;
     await page.evaluate(() => {
       window.originalAccountSetItem = Storage.prototype.setItem;
@@ -284,6 +290,8 @@ try {
     });
     await page.waitForFunction(() => window.storageMigrationFixture.accountScope.includes("account-b.invalid") && !window.storageMigrationFixture.accountSync.busy);
     assert.deepEqual((await snapshot(page)).favs, [700, 777]);
+    assert.deepEqual(await page.evaluate(() => window.storageMigrationFixture.favEpCounts), {700: 9, 777: 8},
+      "Trusted line merge preserves target-only baselines and the highest known count for shared favorites");
     assert.equal((await snapshot(page)).history.find(row => row.id === 700).t, 42);
     assert.equal((await snapshot(page)).history.find(row => row.id === 777).t, 18);
     assert.equal((await storage(page)).hghubx_accounts_v1, beforeRebase, "Failed rebase write keeps the complete original value");
@@ -298,6 +306,7 @@ try {
     assert.equal(rebased.accounts[a].history.find(row => row.id === 700).t, 42);
     assert.equal(rebased.accounts[b].dirtyHistory[700].ep, 4);
     assert.equal(rebased.accounts[b].dirtyHistory[777].ep, 3);
+    assert.deepEqual(rebased.accounts[b].favEpCounts, {700: 9}, "Removing a favorite also removes its episode baseline");
     await page.evaluate(() => {
       window.accountMigrationFixture.boot = { user: { id: 7 }, base: "https://account-a.invalid" };
       window.dispatchEvent(new Event("hg:line-changed"));
