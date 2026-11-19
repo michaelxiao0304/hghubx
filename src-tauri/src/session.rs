@@ -63,6 +63,20 @@ mod tests {
     }
 
     #[test]
+    fn silent_login_preserves_existing_session_on_user_mismatch() {
+        let store = SessionStore::new();
+        let origin = "https://fixture.invalid";
+        store.set(origin, "original-token".into(), json!({ "id": 9 }));
+        let original = store.snapshot(origin).unwrap();
+
+        let result = store.commit_login(
+            original.revision, origin, Some(9), "replacement-token".into(), json!({ "id": 10 }),
+        );
+        assert_eq!(result.unwrap_err(), "当前线路返回的账号与本地登录不一致，请手动重新登录");
+        assert!(store.is_current(&original), "a mismatched identity must not replace or advance the existing session");
+    }
+
+    #[test]
     fn legacy_sessions_are_not_assigned_to_current_line() {
         let store = SessionStore::new();
         *store.current.lock().unwrap() =
@@ -104,13 +118,13 @@ mod tests {
         let store = SessionStore::new();
         let origin = "https://example.com";
         let revision = store.revision();
-        assert!(store.set_if_revision(revision, origin, "new".into(), json!({"id": 2})).is_err());
+        assert!(store.commit_login(revision, origin, None, "new".into(), json!({"id": 2})).is_err());
         assert!(store.token(origin).is_none());
         let dir = std::env::temp_dir().join(format!("hghubx-login-revision-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         store.bind(dir.clone());
-        assert!(store.set_if_revision(revision, origin, "new".into(), json!({"id": 2})).unwrap());
-        assert!(!store.set_if_revision(revision, origin, "late".into(), json!({"id": 1})).unwrap());
+        store.commit_login(revision, origin, None, "new".into(), json!({"id": 2})).unwrap();
+        assert_eq!(store.commit_login(revision, origin, None, "late".into(), json!({"id": 1})).unwrap_err(), "登录期间账号状态已变化，请重试");
         assert_eq!(store.user(origin)["id"], 2);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -135,7 +149,7 @@ mod tests {
         // The old origin no longer resolves credentials.
         assert_eq!(store.token(old_origin), None);
         assert!(store.user(old_origin).is_null());
-        // Same set_if_revision semantics: pre-switch snapshots are stale.
+        // Same commit_login semantics: pre-switch snapshots are stale.
         assert_eq!(store.revision(), before.revision.wrapping_add(1));
         assert!(!store.is_current(&before));
         assert!(!store.update_user_if_current(&before, json!({"id": 1, "nickname": "late"})));
@@ -275,6 +289,17 @@ mod tests {
         assert!(active["pending_session"].is_null());
         assert_eq!(active["user"]["id"], 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn boot_keeps_a_session_bound_to_the_current_line_when_publisher_refresh_fails() {
+        let store = SessionStore::new();
+        let origin = "https://mirror-a.example";
+        store.set(origin, "test-token".into(), json!({"id": 9}));
+        let pending = store.boot_session(origin, false, false);
+        assert_eq!(pending["pending_session"]["user"]["id"], 9);
+        assert_eq!(pending["logged_in"], false);
+        assert_eq!(store.boot_session(origin, true, false)["user"]["id"], 9);
     }
 }
 
@@ -423,16 +448,33 @@ impl SessionStore {
         self.current.lock().unwrap().revision
     }
 
-    pub fn set_if_revision(&self, expected_revision: u64, origin: &str, token: String, user: serde_json::Value) -> Result<bool, String> {
+    /// Commit a normalized login response. Manual login may replace the user;
+    /// recovery of an existing session may only replace that user's token.
+    pub fn commit_login(
+        &self,
+        revision: u64,
+        origin: &str,
+        expected_user_id: Option<i64>,
+        token: String,
+        user: serde_json::Value,
+    ) -> Result<(), String> {
         let mut cur = self.current.lock().unwrap();
-        if cur.revision != expected_revision { return Ok(false); }
+        if cur.revision != revision {
+            return Err("登录期间账号状态已变化，请重试".into());
+        }
+        let library_origin = if let Some(id) = expected_user_id {
+            if cur.origin != origin || cur.user["id"].as_i64() != Some(id) || user["id"].as_i64() != Some(id) {
+                return Err("当前线路返回的账号与本地登录不一致，请手动重新登录".into());
+            }
+            cur.library_origin.clone()
+        } else { None };
         let next = Session {
-            origin: origin.to_owned(), token, user, library_origin: None,
+            origin: origin.to_owned(), token, user, library_origin,
             revision: cur.revision.wrapping_add(1),
         };
         self.save(&next).map_err(|_| "登录信息未能保存，请检查应用存储空间后重试")?;
         *cur = next;
-        Ok(true)
+        Ok(())
     }
 
     fn same_identity(current: &Session, expected: &Session) -> bool {

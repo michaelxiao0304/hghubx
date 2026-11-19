@@ -1,8 +1,8 @@
 # HGhubX 工程入口
 
 这份文件给修改仓库的工程师和 coding agent 用。它不是产品说明，也不重复 README。
-用中文沟通，修改和打包前先核对代码及实际运行版本。当前同步基线：上游 2.2.0、
-`a7d22db6ff8ba9da5ac7b9506b04d2b9db9f2312`（2026-11-18）。当前目录与依赖边界见
+用中文沟通，修改和打包前先核对代码及实际运行版本。当前同步基线：上游 2.2.2、
+`71a42c081f6f46f9e2c6fa7766dc4e1b890808d2`（2026-11-20）。当前目录与依赖边界见
 [`docs/architecture.md`](docs/architecture.md)；实际文件以工作区为准，不要凭旧路径猜文件。
 
 ## 合并源仓库的默认要求
@@ -50,13 +50,15 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 make check
 ```
 
-- `pnpm build` 执行两份 TypeScript 检查和 Vite 构建。
+- `pnpm build` 分别按 `tsconfig.json`、`tsconfig.node.json` 和 `tsconfig.tests.json` 执行三次 TypeScript 检查，再执行 Vite 构建。
 - `pnpm test:smoke` 运行不需要 ffmpeg、真实 Tauri 宿主或上游网络的稳定浏览器用例。
 - `make check` 当前执行 `test-rust`、`test-web`、`docs`、`budget`、`release-check`；**不包含** `test:smoke`。
 - `make release-check` 检查版本字段和 Android `versionCode`；发版由 CI 执行，不在本地发布。
 - 完整播放回归用 `pnpm test:playback`；它需要 FFmpeg 和 Chromium，支持手动诊断，CI 也会在独立的播放任务中分组运行。
 
 CI 是验证记录。命令写了不等于已经运行；报告里必须写清命令、输入、字面结果和退出状态。
+维护者指定的构建、测试依赖镜像不得擅自替换，也不得新增自动换源回退。镜像请求失败时，
+记录失败步骤、原始错误、退出状态与 Actions 链接；可在同一镜像重跑，换源前须获维护者明确同意。
 
 ## 一屏架构
 
@@ -138,6 +140,7 @@ CI 是验证记录。命令写了不等于已经运行；报告里必须写清�
 - `src-tauri/src/source_migration.rs` 在 `lib.rs` 启动恢复线路之前仅将有效旧 `source.json` 导入缺失的 `line.json`；保留原文件，不迁移跨 origin 的凭据。
 - `src/shared/storage/storage.ts` 合并 fork 的 `app_data_v1:default:library` 与上游/旧版 library，收藏去重、同视频取最新观看时间并保留集数/秒数/总时长。备份 `hghubx_library_backup_v2` 和 `_libraryMigration:2` 防止重复导入，原始 library 键保留。写失败不能覆盖原值。
 - `src/shared/api/authFailure.ts`、`src/shared/model/accountData.ts` 和 `src/features/account/SessionNotice.tsx` 保留 401 提示、暂停账号同步、本地续记进度、旧代次响应隔离和关闭提示。403 不视为 401。关闭提示不伪造登录恢复；仅成功重新登录恢复同步，游客数据与账号片库分开。
+- 登录密码只在当前运行的内存中用于恢复，启动删除上游旧明文键 `hghubx_credential_v1`。重启依赖原生会话和系统密码自动填充。
 - 可信线路保留会话以原生 `app_boot` 为准；普通登录即使 user ID 相同也不能擅自跨站合并。账号缓存别名仅在确认 rebase 后生成，合并保留最新进度和待上传记录，原桶留作快照；回切读取别名对应的新值，不能恢复已取消的收藏或已清空的历史。可信切线不清除已确认的 `authExpired`。
 - `pnpm test:storage-migration` 与 `pnpm test:session-expiry` 是 fork 核心回归；保留 `test:tag-results` 对既有筛选行为的检查。上游目录移动后同步 fixture import，不恢复已废弃的旧目录。
 - App 标识保持 `com.hghubx.app`。覆盖安装先正常退出、备份 WebView library，再替换 App；不要卸载或清理数据，不从旧 `com.hghub.huangguo` 容器复制凭据。
@@ -155,3 +158,87 @@ CI 是验证记录。命令写了不等于已经运行；报告里必须写清�
 本轮 2.2.0 合并、回归、双端安装包与 Mac 覆盖结果见 [fork 同步记录](docs/release-notes/v2.2.0-fork-sync.md)。安装前后按记录内容比较；启动播放后允许同集数/时长、时间戳前进且秒数不倒退的正常进度更新，不能只比较原始 JSON 字符串。
 
 后续旋转误切视频与跨视频断点续播的修复、回归和替换安装包见 [播放修复记录](docs/release-notes/v2.2.0-playback-fix.md)。同为 2.2.0，本次修复产物带 `playback-fix` 后缀；核对源码提交和产物哈希，避免再次安装旧包。
+
+## 提交格式
+
+单行英文 Conventional Commits 主题，不写 body。规则自包含：模板内联在本节，不引用历史提交
+作为格式来源（历史可能被改写或删除）。
+
+- 形状 `type(scope): subject`；跨类型/子系统用逗号并列：`fix(playback,startup):`、`ci,test,docs:`。
+- type 取 `feat` / `fix` / `test` / `docs` / `refactor` / `ci` / `chore`；scope 用子系统或功能名
+  （`session`、`account`、`feed`、`playback`、`tv`、`ui`、`lines`、`startup` 等），纯文档/CI 可省 scope。
+- subject 用小写英文祈使句，一句话说清改了什么，句尾不加句号；关联 issue/PR 直接写编号（`#155`）。
+- 合并提交保留结构前缀：`Merge PR #N into <branch>: <英文 subject>`；其余一律单行主题。
+- 回归的维护者批准、红→绿证据与验证命令写进 PR 描述，不写进 commit body。
+- 回归与对应修复成对或相邻提交，保证 CI 可按提交二分；提交信息不得声称未运行过的验证。
+
+内联示例（模板，非历史引用）：
+
+```text
+feat(playback): highlight the bottom scrub rail during horizontal drag
+fix(session,startup): keep the launch overlay until agreement back handling settles (#155)
+docs: sync subsystem contracts for the staged release
+chore(release): prepare 2.3.0
+Merge PR #152 into staging: bottom scrub rail highlight and TV launch PIN
+```
+
+## PR 描述格式
+
+中文两段式，骨架内联如下（不引用既有 PR 作为格式来源）：
+
+```markdown
+Closes #N            <- 仅关联 issue 时保留
+
+## 变更概览
+1. **行为标题**
+   - 用户可见的前后变化；涉及文件用反引号路径；docs 同步在本条内说明。
+2. **行为标题**
+   - ...
+
+## 验证记录
+- `命令` -> 字面结果（exit `0`）。
+- 先红后绿的回归用表格：| 用例 | 旧代码失败现象 | 修复后 |。
+```
+
+- 按行为而非文件罗列；一个 PR 只解决一个目标。
+- 不写未运行过的验证；新增常驻测试须先经维护者同意（不变量 11），未获批时写明实测方式与
+  「常驻回归待核实」。
+
+## Release 描述格式
+
+中文发布说明，标题 `HGhubX vX.Y.Z`；骨架内联如下：
+
+```markdown
+# HGhubX vX.Y.Z
+
+一句话概括本版主题；覆盖范围（桌面/移动/TV 或本轮修复面）。
+
+## 新增与优化
+1. **行为标题（#N）**：用户可见效果与入口路径。
+
+## 修复
+1. **行为标题（#N）**：症状 -> 修复后行为。
+
+## 安装与兼容提示
+- 各平台产物与安装方式；升级/覆盖安装的数据保留行为；已知限制。
+
+## 致谢
+- 贡献者/反馈者（可省）。
+
+## 验证
+- 各平台 CI job 结果与 run id；实机/浏览器回归结论。
+```
+
+- 条目按行为编号加粗；issue 编号可引（issue 不随提交删除），不引 commit sha 作为说明来源。
+- 无内容的段整段省略，不留空标题；不写未运行过的验证。
+- 发布由维护者/CI 执行；agent 只起草正文，不 tag、不 publish。
+- 模板文件为 `docs/release-notes/TEMPLATE.md`；正式正文写 `docs/release-notes/<tag>.md`，release job 读它作正文。
+
+## 其他文字（docs / lessons / UI 文案 / issue）
+
+- 简体中文；全角标点 `，。；：（）`；UI 标签与按钮名用「」；代码、命令、路径、存储键用反引号。
+- 日期 `YYYY-MM-DD`；不编造 issue/PR/commit 编号；不确定写「待核实」。
+- `docs/lessons.md` 行格式：`| 日期 | 主题 | 症状 | 根因 | 规则 | 回归测试或来源 |`，
+  来源指向真实测试或代码路径。
+- 英文只出现在：commit subject、代码标识符、命令与字面输出、CI job 名。
+- 风格规则一律内联模板自包含；历史提交/PR/Release 可能被改写或删除，不得作为格式定义的唯一来源。

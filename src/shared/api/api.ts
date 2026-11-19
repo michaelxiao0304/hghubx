@@ -76,8 +76,8 @@ const failMessage = (msg: string, status?: string, command?: string) =>
     ? `服务器请求失败（HTTP ${status}），请稍后重试或在设置中切换线路`
     : msg.length > 140 ? `${msg.slice(0, 140)}…` : msg;
 
-async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const onUnauthorized = captureAuthFailure(cmd, args);
+async function call<T>(cmd: string, args?: Record<string, unknown>, deferExpiry = false): Promise<T> {
+  const onUnauthorized = deferExpiry ? undefined : captureAuthFailure(cmd, args);
   const once = () => invoke(cmd, args) as Promise<T>;
   try {
     const r = await once();
@@ -131,13 +131,13 @@ export const api = {
       pending_migration_identity?: { origin: string; user_id: number } | null;
     }>("app_boot", { verifySession }),
   securitySet: (strict: boolean) => call<boolean>("security_set", { strict }),
-  login: (username: string, password: string) =>
-    call<AccountSnapshot>("api_login", { username, password }),
+  login: (username: string, password: string, reauth?: AccountIdentity & { credentialOrigin: string }) =>
+    call<AccountSnapshot>("api_login", { username, password, ...reauth }),
   register: (username: string, password: string, email = "") =>
     call<AccountSnapshot>("api_register", { username, password, email }),
   logout: (identity?: AccountIdentity) => call<{ ok: boolean }>("api_logout", identity ? { expectedUserId: identity.expectedUserId, expectedOrigin: identity.expectedOrigin } : {}),
-  me: (identity?: AccountIdentity) => call<AccountSnapshot>("api_me", identity ? { expectedUserId: identity.expectedUserId, expectedOrigin: identity.expectedOrigin } : {}),
-  accountHistory: (identity: AccountIdentity, page = 1, size = 50) => call<AccountHistoryPage>("api_account_history", { expectedUserId: identity.expectedUserId, expectedOrigin: identity.expectedOrigin, page, size }),
+  me: (identity?: AccountIdentity, deferExpiry = false) => call<AccountSnapshot>("api_me", identity ? { expectedUserId: identity.expectedUserId, expectedOrigin: identity.expectedOrigin } : {}, deferExpiry),
+  accountHistory: (identity: AccountIdentity, page = 1, size = 50, deferExpiry = false) => call<AccountHistoryPage>("api_account_history", { expectedUserId: identity.expectedUserId, expectedOrigin: identity.expectedOrigin, page, size }, deferExpiry),
   accountHistoryRecord: (identity: AccountIdentity, videoId: number, ep: number) => call<unknown>("api_account_history_record", { expectedUserId: identity.expectedUserId, expectedOrigin: identity.expectedOrigin, videoId, ep }),
   accountHistoryDelete: (identity: AccountIdentity, ids: number[]) => call<unknown>("api_account_history_delete", { expectedUserId: identity.expectedUserId, expectedOrigin: identity.expectedOrigin, ids }),
 

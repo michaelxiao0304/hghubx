@@ -30,6 +30,16 @@
 | 2026-11-18 | 静默加载无反馈 | 视频一直转圈且没有错误提示 | 只处理媒体 error/fatal，原生传输挂起、时钟停滞和播放 IPC 长时间未返回没有前端等待上限 | 有播放意图且前台无进展时有限重试；暂停/后台不误报，终止后停止恢复；区分媒体 401/403 与业务账号失效，提示可关闭 | `usePlaybackWatchdog.ts`、`playbackRequest.ts`；`test-ios-native-media.mjs` 修复前 20 秒后连接次数 1 != 2；`test-playback --scenarios feedback` |
 
 | 2026-11-19 | macOS 离线网络回归 | 文章图片检查将本地媒体请求计为外网访问 | 自定义协议的 URL.origin 为 null | 按明确的协议、主机和 /img 路径识别 Apple 本地路由，fixture 仍中止请求 | `scripts/test-network-settings.mjs`，`test:playback --scenarios review` |
+| 2026-11-19 | 连划切集跳视频 | 开启上下划切集后快速连划，第二划切到别的视频而非下一集 | 切集后新集地址未解析前 `playUrl` 为空，手势 overlay 卸载成封面 div，触摸落到可滚动列表触发 `resolveSwipe` | 活跃条目的手势 overlay 必须常驻（`playUrl` 为空时内部渲染封面），过渡期手势不中断 | `src/features/feed/Feed.tsx`；`scripts/test-playback.mjs` gesture 场景（swipe-ep 延迟闸门） |
+| 2026-11-19 | 启动掉登录 | 镜像线路重启后要求重新登录，启动时发布页超时必现 | `app_boot` 严格模式下把「本进程发布页未验证」等同于登出，即使会话绑在当前线路 | boot 可见性走 `SessionStore::boot_session()`：绑当前线路的会话保持可见；`edge` 未验证镜像不发 token 仍 fail closed | `src-tauri/src/session.rs` 的 boot 可见性测试；`src-tauri/src/api/platform.rs` |
+| 2026-11-19 | 镜像账号 401 循环 | 非主线路同步面板裸显示「401；401」并反复重试 | 镜像/CDN 不认其它线路签发或 rebase 过来的 token，客户端没有恢复路径 | 账号同步读取遇到 401 时用本次运行内绑定账号与线路的凭据重登一次；后端先校验预期身份和代次，再提交新会话；失败保留原会话并提示手动登录 | `src-tauri/src/api/account.rs`、`src/shared/model/accountData.ts`；`scripts/test-account-sync-empty-state.mjs` 的 401 场景 |
+| 2026-11-19 | 划集提示堆叠 | 快速上下划切集时「第 N 集」提示卡片连弹多张、互相覆盖 | `pushToastItem` 每次都新增卡片，没有同语义合并；划集 toast 无 tag | 同 `tag` 的 toast 原地替换内容并重置消失计时（不新增卡片、不重放入场动画）；无 tag 仍堆叠。划集提示固定 `tag="episode"` | `src/shared/model/store.tsx` 的 `pushToastItem`/`scheduleToastRemoval`、`src/features/feed/useFeedTouchGestures.ts`；常驻回归 `scripts/test-ui-feedback.mjs`（`toast-same-tag-dedup`/`toast-ttl-reset`/`toast-untagged-stacks`，旧代码红/修复绿） |
+| 2026-11-19 | 宽屏页面未限宽居中 | 桌面宽屏下「我的」等 `.ios-page` 页面内容全宽拉伸/贴边，两侧留白不对称 | `.ios-page>.scroll-y`/`.shrink-0` 只有 `padding-inline`，没有限宽与居中 | 宽屏用 `--ios-page-max:clamp(720px,62vw,960px)` 给标题与滚动体同时限宽 + `margin-inline:auto`；窄屏 max-width 自动失效保持全宽。改容器几何要同时改标题与滚动体两条规则 | `src/styles/ios.css` 的 `.ios-page`；常驻回归 `scripts/test-ui-feedback.mjs`（`wide-centering`/`narrow-full-width`，旧代码红/修复绿） |
+| 2026-11-19 | TV PIN 快按丢键 | 设置启动密码时连按数字键，确认步只收到部分键 | 步切换时 `appendDigit` 已同步清空缓冲，延迟执行的 effect 可能再次清空并吞掉下一步按键 | 只在同步输入路径清空缓冲；测试等待模态打开或卸载后再开始下一段输入，不延缓同一模态内的连续按键 | `src/tv/TvPinGate.tsx`；`scripts/test-tv-remote.mjs` 的 `pin-lock-gate-and-settings` |
+| 2026-11-19 | TV resize 后焦点断言漂移 | `720p-1080p-4k-layout` 偶发 `outline-style` 读到 `none`，失败视口不固定 | `setViewportSize` 真实 resize 后渲染 widget 重建窗口内 `focus()` 静默不落地，测试同一次 evaluate 同步读 `:focus` 派生样式 | 测试在 resize 后等两帧再聚焦，并显式断言 `activeElement` 命中（未命中重试一次）；不改 `tv.css` 焦点规则。产品侧 resize 焦点兜底另案评估 | `scripts/test-tv-remote.mjs` 的 `720p-1080p-4k-layout` |
+| 2026-11-19 | 收藏集数缓存过期 | 返回仍挂载的「我的」页时，已缓存的短剧可能不显示新集 | 页面重新激活时只读取未缓存详情 | 重新激活时后台刷新已展现的收藏；限制并发，保留上次详情及实际观看断点 | `scripts/test-account-sync-empty-state.mjs` 的已缓存收藏更新场景 |
+| 2026-11-19 | 播放测试依赖镜像 | 扩展播放用例未启动，安装 FFmpeg 退出 `100` | CI 运行器访问指定 Ubuntu 镜像时握手失败或超时；临时换源回退偏离维护者配置 | 保留指定镜像；报告依赖安装失败与退出状态，只在同源重跑；更换或增加回退源先征得同意 | [CI 44402407330](https://github.com/zxsos/HGhubX/actions/runs/44402407330/job/135148647519)；`.github/workflows/ci.yml` |
+| 2026-11-19 | Android 登录软键盘遮挡 | 320 × 568 与 360 × 840 dp 下键盘盖住密码框和登录按钮，滚动仍被遮住 | 边到边 WebView 保留全屏布局，登录弹层只预留系统栏、不计算输入法遮挡 | 仅标准版登录弹层按原生输入法重叠量限制滚动区域；键盘与系统栏底部边距不叠加 | `scripts/patch-android-splash.mjs`、`src/shared/ui/ios/overlays.tsx`；模拟器复测见平台壳文档 |
 
 新回归的追加方式：
 
@@ -38,3 +48,5 @@
 3. 来源列写真实 commit/PR 或代码路径；不确定的写“待核实”，不要猜编号。
 
 - 覆盖安装后的首次启动可能先自动切线、后验证旧镜像。保留原 origin 的会话和片库，待线路确认后再同步；回归见 `src-tauri/src/session.rs` 与 `scripts/test-session-expiry.mjs`。
+
+| 2026-11-20 | 2.2.2 登录恢复 | 上游将密码写入 WebView 存储 | 登录与注册共用持久化凭据 | 仅在内存保留重登凭据，启动丢弃旧密码键，重启使用原生会话 | `sessionCredential.ts`、`scripts/test-account-sync-empty-state.mjs` 的表单登录与 401 回归 |

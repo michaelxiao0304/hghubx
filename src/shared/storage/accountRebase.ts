@@ -27,9 +27,13 @@ export function mergeRebasedAccounts(source: AccountData, target?: AccountData):
     const latest = history.get(id);
     if (latest && latest.at > dirtyHistory[id].at) dirtyHistory[id] = { ep: latest.ep, at: latest.at };
   }
+  const favEpCounts = { ...target.favEpCounts };
+  for (const [id, count] of Object.entries(source.favEpCounts || {})) {
+    favEpCounts[Number(id)] = Math.max(favEpCounts[Number(id)] || 0, count);
+  }
   const episodes = [...(source.likeEpisodes || []), ...(target.likeEpisodes || [])];
   return {
-    ...source,
+    ...source, favEpCounts,
     favs: union(source.favs, target.favs), likes: union(source.likes, target.likes),
     follows: union(source.follows, target.follows), postFavs: union(source.postFavs, target.postFavs),
     postLikes: union(source.postLikes, target.postLikes),

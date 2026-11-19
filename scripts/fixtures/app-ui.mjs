@@ -32,11 +32,13 @@ export function installFixture({ theme, titles, accountData = false }) {
     },
     hasHardwareBack() { return backChannels.size > 0; },
   };
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener(_event, id) { callbacks.delete(id); } };
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
     transformCallback(callback) { const id = ++nextCallback; callbacks.set(id, callback); return id; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(command, args = {}) {
+      if (command === "plugin:event|listen") return args.handler;
       if (command === "app_boot") return { user: null, logged_in: false, strict_security: true, base: "https://fixture.invalid" };
       if (command === "playback_log_status") return { enabled: false, path: null, error: null };
       if (command === "line_auto") return { base: "https://fixture.invalid", previous: "https://fixture.invalid", switched: false, pick: { tier: "main", ms: 1, reason: "fixture", candidates: [] } };
