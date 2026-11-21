@@ -15,8 +15,8 @@ const state = {
   searchHist: ["保留搜索记录"], volume: 0.42, muted: false,
   muteOnStartup: false, swipeEp: false, preferHevc: true,
 };
-// 迁移会为新字段补默认值（#146-3 全屏闲置隐藏秒数）：旧种子不带该字段，落盘应补齐。
-const migrated = { ...state, fsIdleSecs: 3 };
+// Migration fills defaults for new fields (idle-hide seconds, startup tab, ambient glow, balance volume): the old seed omits them and persistence must add them.
+const migrated = { ...state, balanceVolume: false, fsIdleSecs: 3, startupTab: "home", ambientGlow: true };
 const oldData = {
   hghub_app_v1: JSON.stringify(state), hghub_swipe_ep_v2: "1", hghub_theme: "light",
 };
@@ -29,7 +29,7 @@ try {
   const html = await vite.transformIndexHtml("/tests/storage-migration.html", fixtureHtml);
   browser = await chromium.launch({ headless: true, executablePath: process.env.BROWSER_EXECUTABLE || undefined });
 
-  async function open(seed, failure = "") {
+  async function open(seed, failure = "", batch = false) {
     const context = await browser.newContext();
     const page = await context.newPage();
     page.on("pageerror", error => errors.push(error.message));
@@ -40,7 +40,7 @@ try {
       }
       return route.continue();
     });
-    await page.addInitScript(({ seed, failure }) => {
+    await page.addInitScript(({ seed, failure, batch }) => {
       if (!sessionStorage.getItem("seeded")) {
         localStorage.clear();
         for (const [key, value] of Object.entries(seed)) localStorage.setItem(key, value);
@@ -48,6 +48,24 @@ try {
       }
       window.accountMigrationFixture = { offline: false, hold: false, pending: [], calls: [] };
       Object.assign(window, { __TAURI_INTERNALS__: { async invoke(command, args = {}) {
+        if (batch) {
+          const origin = sessionStorage.getItem("batch-line") || "https://account-a.invalid";
+          const dataKey = "server:" + origin;
+          const server = JSON.parse(sessionStorage.getItem(dataKey) || '{"favs":[700,701,702],"history":[700,701,702]}');
+          if (command === "app_boot") return { user: { id: 7 }, base: origin, library_origin: "https://account-a.invalid", strict_security: true };
+          if (command === "api_me") return { user: { id: 7 }, origin, interactions: { favorite_video_ids: server.favs } };
+          if (command === "api_account_history") return {
+            items: server.history.map(id => ({ id: id + 1000, video_id: id, last_ep: 2, target_type: "video", updated_at: "2026-01-01T00:00:00Z" })),
+            pagination: { page: 1, pages: 1, size: 100, total: server.history.length },
+          };
+          if (command === "api_collect" || command === "api_account_history_delete") {
+            if (args.expectedOrigin !== origin || args.expectedUserId !== 7) throw new Error("wrong mutation identity");
+            if (command === "api_collect") server.favs = server.favs.filter(id => id !== args.id);
+            else server.history = server.history.filter(id => !args.ids.includes(id + 1000));
+            sessionStorage.setItem(dataKey, JSON.stringify(server));
+            return { ok: true };
+          }
+        }
         if (command === "app_boot") return { strict_security: true, ...window.accountMigrationFixture.boot };
         if (command === "debug_log" || command === "playback_log_write") return;
         const account = window.accountMigrationFixture;
@@ -84,7 +102,7 @@ try {
       if (failure === "remove") {
         Storage.prototype.removeItem = () => { throw new DOMException("fixture: blocked", "SecurityError"); };
       }
-    }, { seed, failure });
+    }, { seed, failure, batch });
     await page.goto(`${origin}tests/storage-migration.html`);
     await page.waitForFunction(() => window.storageMigrationFixture?.strictSecurityReady, null, { timeout: 10000 });
     return { context, page };
@@ -326,6 +344,38 @@ try {
     assert.equal(JSON.parse((await storage(page)).hghubx_library_backup_v2).originals.hghubx_app_v1, "broken");
     await context.close();
     console.log("PASS: malformed canonical data does not hide a valid fork library");
+  }
+  {
+    const first = "https://account-a.invalid", second = "https://account-b.invalid";
+    const history = [700, 701, 702].map(id => ({ id, ep: 2, t: 37.5, dur: 90, at: 1800000000000 }));
+    const cache = { favs: [700, 701, 702], history, favEpCounts: {700: 5, 701: 6, 702: 7} };
+    const accounts = Object.fromEntries([first, second].map(origin => [JSON.stringify([origin, 7]), cache]));
+    const { context, page } = await open({ hghubx_accounts_v1: JSON.stringify({ version: 1, accounts }) }, "", true);
+    const ready = origin => page.waitForFunction(origin => window.storageMigrationFixture?.accountScope.includes(origin)
+      && window.storageMigrationFixture.accountSync.favoritesKnown && !window.storageMigrationFixture.accountSync.busy, origin);
+    await ready(first);
+    await page.evaluate(async () => {
+      const store = window.storageMigrationFixture;
+      for (const id of [701, 702]) await store.setCollected("video", id, false);
+      await store.removeHistory([701, 702]);
+    });
+    const check = async () => {
+      const saved = await snapshot(page);
+      assert.deepEqual(saved.favs, [700], "A stale trusted mirror must not restore removed favorites");
+      assert.deepEqual(saved.history, [history[0]], "Only the untouched episode and exact seconds survive batch deletion");
+      assert.deepEqual(await page.evaluate(() => window.storageMigrationFixture.favEpCounts), {700: 5});
+    };
+    await check();
+    for (const origin of [second, first]) {
+      await page.evaluate(origin => { sessionStorage.setItem("batch-line", origin); window.dispatchEvent(new Event("hg:line-changed")); }, origin);
+      await ready(origin);
+      await check();
+      await page.reload();
+      await ready(origin);
+      await check();
+    }
+    await context.close();
+    console.log("PASS: batch removals survive stale trusted mirrors, return and restart with untouched progress");
   }
   for (const seed of [{}, { hghub_app_v1: "invalid json" }]) {
     const { context, page } = await open(seed);

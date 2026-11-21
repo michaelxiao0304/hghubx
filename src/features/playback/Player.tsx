@@ -1,6 +1,6 @@
 import { Button, Input } from "../../shared/ui/ios/controls";
 import { PlaybackFeedback } from "./PlaybackFeedback";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fmtTime } from "../../shared/api/api";
 import { useSeekInput } from "./useSeekInput";
@@ -9,6 +9,7 @@ import VideoSurface, { type VideoHandle } from "./VideoSurface";
 import { useInlinePlayerFullscreen } from "./useInlinePlayerFullscreen";
 import "../../styles/post-player.css";
 import { ICompress, IExpand, ILockF, IPauseF, IPlayF, IVol, IVolMute } from "../../shared/ui/icons";
+import { tr } from "../../shared/i18n";
 
 type Props = {
   src: string;              // 原始 m3u8 地址
@@ -19,17 +20,19 @@ type Props = {
   muted?: boolean;
   volume?: number;
   loop?: boolean;
+  ambientGlow?: boolean;
   onEnded?: () => void;
   onPlaying?: () => void;
   onTogglePlay?: (playing: boolean) => void;
   onToggleMute?: () => void;
+  balanceVolume?: boolean;
   controls?: boolean;
   className?: string;
   diagnosticContext?: Record<string, unknown>;
 };
 
 export default function Player({
-  src, scopeKey, poster, autoPlay, active = true, muted = false, volume = 1, loop = false, onEnded, onPlaying,
+  src, scopeKey, poster, autoPlay, active = true, muted = false, volume = 1, loop = false, ambientGlow = false, balanceVolume = false, onEnded, onPlaying,
   onTogglePlay, onToggleMute, controls = true, className = "", diagnosticContext = {},
 }: Props) {
   const surfaceRef = useRef<VideoHandle>(null);
@@ -45,6 +48,23 @@ export default function Player({
   const [playing, setPlaying] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState("");
   const [waiting, setWaiting] = useState(false);
+  /* 短暂 HLS 缓冲（waiting→playing 几百毫秒内结束）不闪整屏转圈（issue #165）：
+     媒体事件进入 waiting 延迟 300ms 再显示；seek/重试是用户动作，立即显示；
+     退出 waiting 立即取消。 */
+  const [showWaiting, setShowWaiting] = useState(false);
+  const waitingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearWaitingTimer = () => { if (waitingTimer.current) { clearTimeout(waitingTimer.current); waitingTimer.current = null; } };
+  const enterWaiting = (delayed: boolean) => {
+    clearWaitingTimer();
+    if (delayed) {
+      waitingTimer.current = setTimeout(() => { waitingTimer.current = null; setShowWaiting(true); }, 300);
+    } else {
+      setShowWaiting(true);
+    }
+    setWaiting(true);
+  };
+  const leaveWaiting = () => { clearWaitingTimer(); setShowWaiting(false); setWaiting(false); };
+  useEffect(() => clearWaitingTimer, []);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [rate, setRate] = useState(1);
@@ -61,7 +81,7 @@ export default function Player({
       if (!handle || !video || !handle.isActive()) return;
       const dur = video.duration && Number.isFinite(video.duration) ? video.duration : 0;
       const target = dur > 0 ? Math.max(0, Math.min(dur - 0.15, rawTarget)) : Math.max(0, rawTarget);
-      if (Math.abs(video.currentTime - target) > 0.01) setWaiting(true);
+      if (Math.abs(video.currentTime - target) > 0.01) enterWaiting(false);
       handle.seek(target, `legacy_${input}`);
       setTime(video.currentTime);
     },
@@ -72,7 +92,7 @@ export default function Player({
   const retry = () => {
     if (!surfaceRef.current?.isActive()) return;
     setErrMsg("");
-    setWaiting(true);
+    enterWaiting(false);
     setPlaying(false);
     surfaceRef.current.retry();
   };
@@ -102,25 +122,27 @@ export default function Player({
             volume={volume}
             rate={rate}
             loop={loop}
+            ambientGlow={ambientGlow}
+            balanceVolume={balanceVolume}
             diagnosticContext={{ view: "post_detail", ...diagnosticContext }}
             onClick={toggle}
             onTime={setTime}
             onDuration={setDuration}
             onPlay={() => { setPlaying(true); onTogglePlay?.(true); }}
-            onPlaying={() => { setPlaying(true); setWaiting(false); setErrMsg(""); onPlaying?.(); }}
+            onPlaying={() => { setPlaying(true); leaveWaiting(); setErrMsg(""); onPlaying?.(); }}
             onPause={() => { setPlaying(false); onTogglePlay?.(false); }}
-            onWaiting={() => setWaiting(true)}
+            onWaiting={() => enterWaiting(true)}
             onLoadingStatus={setLoadingStatus}
-            onSeeked={() => setWaiting(false)}
+            onSeeked={() => leaveWaiting()}
             onEnded={onEnded}
-            onClearError={() => { setErrMsg(""); setWaiting(false); }}
-            onError={(m) => { setErrMsg(m); setWaiting(false); setPlaying(false); }}
+            onClearError={() => { setErrMsg(""); leaveWaiting(); }}
+            onError={(m) => { setErrMsg(m); leaveWaiting(); setPlaying(false); }}
           />
 
-          {active && <PlaybackFeedback error={errMsg} waiting={waiting || !!loadingStatus} status={loadingStatus} onRetry={retry} />}
+          {active && <PlaybackFeedback error={errMsg} waiting={showWaiting || !!loadingStatus} status={loadingStatus} onRetry={retry} />}
 
           {!playing && !waiting && !loadingStatus && !errMsg && (
-            <Button onClick={toggle} aria-label="播放"
+            <Button onClick={toggle} aria-label={tr("播放")}
               className="absolute inset-0 flex items-center justify-center">
               <span className="w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">
                 <IPlayF size={26} className="text-white ml-0.5" />
@@ -129,7 +151,7 @@ export default function Player({
           )}
 
           {controls && (
-            <div className="player-inline-controls" role="group" aria-label="播放控制">
+            <div className="player-inline-controls" role="group" aria-label={tr("播放控制")}>
               <div className="post-player-seek-row">
                 <div className="post-player-seek-wrap">
                   {seek.scrubbing && (
@@ -137,23 +159,23 @@ export default function Player({
                       <strong>{fmtTime(seek.time)}</strong><span> / {fmtTime(duration)}</span>
                     </span>
                   )}
-                  <Input aria-label="播放进度" type="range" {...seek.inputProps}
+                  <Input aria-label={tr("播放进度")} type="range" {...seek.inputProps}
                     className="hg-range" style={{ ...seek.inputProps.style, "--fill": `${pct}%` } as React.CSSProperties} />
                 </div>
                 <span className="post-player-time">{fmtTime(seek.time)} / {fmtTime(duration)}</span>
               </div>
               <div className="post-player-actions">
-                <Button onClick={toggle} aria-label={playing ? "暂停" : "播放"} className="pressable">
+                <Button onClick={toggle} aria-label={playing ? tr("暂停") : tr("播放")} className="pressable">
                   {playing ? <IPauseF size={16} /> : <IPlayF size={16} />}
                 </Button>
-                <Button onClick={() => onToggleMute?.()} aria-label={muted ? "取消静音" : "静音"} className="pressable">
+                <Button onClick={() => onToggleMute?.()} aria-label={muted ? tr("取消静音") : tr("静音")} className="pressable">
                   {muted ? <IVolMute size={16} /> : <IVol size={16} />}
                 </Button>
-                <Button onClick={() => setControlsLocked(true)} aria-label="锁定播放控制" title="锁定播放控制" aria-pressed={false} className="pressable">
+                <Button onClick={() => setControlsLocked(true)} aria-label={tr("锁定播放控制")} title={tr("锁定播放控制")} aria-pressed={false} className="pressable">
                   <ILockF size={16} />
                 </Button>
-                <Button onClick={cycleRate} aria-label={`播放速度 ${rate} 倍`} className="text-[12px] font-bold text-white/85 pressable tabular-nums">{rate}x</Button>
-                <Button onClick={toggleFull} aria-label={full ? "退出全屏" : "全屏"} aria-pressed={full} className="pressable">
+                <Button onClick={cycleRate} aria-label={tr("播放速度 {0} 倍", rate)} className="text-[12px] font-bold text-white/85 pressable tabular-nums">{rate}x</Button>
+                <Button onClick={toggleFull} aria-label={full ? tr("退出全屏") : tr("全屏")} aria-pressed={full} className="pressable">
                   {full ? <ICompress size={16} /> : <IExpand size={16} />}
                 </Button>
               </div>

@@ -1,7 +1,7 @@
 {
   "name": "hghubx",
   "private": true,
-  "version": "2.2.2",
+  "version": "2.2.5",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "scripts": {
@@ -19,6 +19,10 @@
     "test:line-selection": "node scripts/test-line-selection.mjs",
     "test:network-settings": "node scripts/test-network-settings.mjs",
     "test:ui-feedback": "node scripts/test-ui-feedback.mjs",
+    "test:home-controls": "node tests/test-home-controls.mjs",
+    "test:post-flicker": "node scripts/test-post-flicker.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "test:i18n": "node scripts/test-i18n.mjs",
     "test:smoke": "node scripts/test-smoke.mjs",
     "tauri": "tauri",
     "app:dev": "tauri dev",
@@ -27,7 +31,9 @@
     "android:icons": "node scripts/sync-android-icons.mjs",
     "ios:icons": "node scripts/generate-ios-icons.mjs",
     "android:dev": "tauri android dev",
-    "android:build": "tauri android build"
+    "android:build": "tauri android build",
+    "android:tv:init": "node scripts/build-android-tv.mjs --android-init",
+    "android:tv:build": "node scripts/build-android-tv.mjs --android-build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

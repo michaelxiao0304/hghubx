@@ -14,6 +14,7 @@ import ResizeHandles from "./shell/ResizeHandles";
 import { tracePlayback } from "../shared/diagnostics/playbackDiagnostics";
 import { IGrid, IGridF, IHome, IHomeF, ISearch, IUser, IUserF } from "../shared/ui/icons";
 import SessionNotice from "../features/account/SessionNotice";
+import { tr, useLocale } from "../shared/i18n";
 
 // Local chunks load on first visit; visited tabs stay mounted as before.
 // Feed (+ hls.js) is separated from the initial shell so cold start mounts chrome and
@@ -35,7 +36,7 @@ const FollowingPage = lazy(() => import("../features/account/User").then(module 
 const UserPage = lazy(() => import("../features/account/User").then(module => ({ default: module.UserPage })));
 
 function PageLoading() {
-  return <div className="absolute inset-0 grid place-items-center bg-bg"><Loader label="页面加载中" /></div>;
+  return <div className="absolute inset-0 grid place-items-center bg-bg"><Loader label={tr("页面加载中")} /></div>;
 }
 
 const SELECTABLE_TEXT = 'input, textarea, [contenteditable="true"], .select-text, .article-body';
@@ -44,13 +45,13 @@ const isSelectableText = (target: EventTarget | null) => target instanceof Eleme
 function TabBar() {
   const { tab, setTab } = useStore();
   const items = [
-    { key: "home", label: "首页", Icon: IHome, Active: IHomeF },
-    { key: "search", label: "搜索", Icon: ISearch, Active: ISearch },
-    { key: "category", label: "分类", Icon: IGrid, Active: IGridF },
-    { key: "profile", label: "我的", Icon: IUser, Active: IUserF },
+    { key: "home", label: tr("首页"), Icon: IHome, Active: IHomeF },
+    { key: "search", label: tr("搜索"), Icon: ISearch, Active: ISearch },
+    { key: "category", label: tr("分类"), Icon: IGrid, Active: IGridF },
+    { key: "profile", label: tr("我的"), Icon: IUser, Active: IUserF },
   ] as const;
   const index = items.findIndex(item => item.key === tab);
-  return <nav className="hg-tabbar ios-mobile-nav" aria-label="主导航" data-over-video={tab === "home"}>
+  return <nav className="hg-tabbar ios-mobile-nav" aria-label={tr("主导航")} data-over-video={tab === "home"}>
       <div className="hg-glass">
       <div className="hg-drop" aria-hidden="true" style={{ transform: `translateX(${index * 100}%)` }}><LiquidIndicator /></div>
       <div className="ios-mobile-nav-items">
@@ -282,6 +283,7 @@ function MobileShell() {
 
 /* ============ 入口 ============ */
 export default function App() {
+  useLocale();
   const { platform, loginOpen, setLoginOpen, tab, setTab, stack, pop, fs, setFs } = useStore();
   useEffect(() => {
     tracePlayback("navigation.change", { tab, stack: stack.map(p => ({ page: p.kind, key: p.key })), login_open: loginOpen });

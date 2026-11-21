@@ -1,6 +1,6 @@
 export { default as Player } from "./Player";
 export { default as PlayerControls } from "./PlayerControls";
-export { default as PlaybackLock } from "./PlaybackLock";
+export { default as PlaybackLock, playbackLockRightInset } from "./PlaybackLock";
 export { PlaybackProgress, PlaybackTime } from "./PlaybackProgress";
 export { default as VideoSurface } from "./VideoSurface";
 export type { VideoHandle } from "./VideoSurface";

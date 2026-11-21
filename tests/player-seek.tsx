@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Feed } from "../src/features/feed";
 import { AppProvider, useStore } from "../src/shared/model/store";
+import { ToastHost } from "../src/shared/ui/ui";
 import { api } from "../src/shared/api/api";
 import "../src/index.css";
 import { flushPlaybackLog, initPlaybackLog, playbackLogApi, setPlaybackLog } from "../src/shared/diagnostics/playbackDiagnostics";
@@ -75,6 +76,8 @@ const portraitFitTest = new URLSearchParams(location.search).has("portrait-fit")
 // 2.2.0 反馈回归：多集详情 + 下一集地址延迟解析，制造切集过渡期窗口。
 // 延迟闸门由测试脚本在页面初始化时注入（window.__playGate）， harness 只消费。
 const swipeEpTest = new URLSearchParams(location.search).has("swipe-ep");
+// Preview fixture: ambient glow is a player prop, so opt in without changing the store.
+const ambientGlow = new URLSearchParams(location.search).get("ambient") === "on";
 if (diagnosticTest) {
   // Test-only handle: exercise the real engine's public API without rewriting production modules.
   const attach = Hls.prototype.attachMedia;
@@ -151,15 +154,16 @@ function Fixture() {
       ? { position: "relative", width: window.innerWidth, height: window.innerHeight }
       : { position: "relative", width: 900, height: 540 }}>
       {mounted && (legacyTest
-        ? <Player src="https://media.fixture.invalid/list.m3u8" autoPlay active={active} className="w-full h-full" diagnosticContext={{ video_id: 991, active }} />
+        ? <Player src="https://media.fixture.invalid/list.m3u8" autoPlay active={active} ambientGlow={ambientGlow} className="w-full h-full" diagnosticContext={{ video_id: 991, active }} />
         : delayedMount
-          ? <VideoSurface src="https://media.fixture.invalid/list.m3u8" autoPlay active={active} className="w-full h-full" diagnosticContext={{ video_id: 991, active }} />
+          ? <VideoSurface src="https://media.fixture.invalid/list.m3u8" autoPlay active={active} ambientGlow={ambientGlow} className="w-full h-full" diagnosticContext={{ video_id: 991, active }} />
           : <Feed videoIds={swipeEpTest ? [991, 992] : [991]} mode="home" active={active} bottomInset={0} />)}
     </div>
     <button onClick={() => setActive((v) => !v)}>切换播放页激活状态</button>
     {diagnosticTest && <button onClick={() => setSettings(v => !v)}>诊断设置</button>}
     {settings && <div style={{ position: "relative", width: 900, height: 700 }}><Settings onBack={() => setSettings(false)} wide /></div>}
     {feedbackMode && <LoginModal />}
+    <ToastHost />
   </AppProvider>;
 }
 createRoot(document.querySelector("#root")!).render(libraryTest ? <AppProvider><LibraryFixture /></AppProvider> : <Fixture />);

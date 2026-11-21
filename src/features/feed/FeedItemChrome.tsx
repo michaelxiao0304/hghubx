@@ -4,20 +4,35 @@ import { PlaybackFeedback } from "../playback/PlaybackFeedback";
 import { fmt, fmtTime } from "../../shared/api/api";
 import type { Post } from "../../shared/api/types";
 import type { Toast } from "../../shared/model/store";
-import { PlaybackProgress, type PlaybackClock } from "../playback";
+import { PlaybackProgress, playbackLockRightInset, type PlaybackClock } from "../playback";
 import {
   IBack, IChevR, IChevronDown, IChevronUp, ICommentF, IExpand, IFileText,
-  IHeart, IHeartF, IList, IPlayF, IStar, IStarF, IVertSwap,
+  IHeart, IHeartF, IList, ILockF, IMore, IPlayF, IStar, IStarF, IVertSwap, IVol, IVolMute,
 } from "../../shared/ui/icons";
+import { CurrentVideoTags } from "./CurrentVideoTags";
+import { useTagHint } from "./useTagHint";
 import type { FeedMeta } from "./useFeedActions";
 import type { FeedPanel } from "./useFeedViewport";
 import "../../styles/video-details.css";
+import { tr } from "../../shared/i18n";
+
+function MobileTagHint() {
+  const tagHint = useTagHint();
+  if (tagHint.dismissed) return null;
+  return <div className="current-video-tags-hint">
+    <span>{tr("点按查看同类 · 长按屏蔽")}</span>
+    <Button type="button" className="current-video-tags-hint-dismiss"
+      aria-label={tr("不再显示标签操作提示")} onClick={tagHint.dismiss}>{tr("不再显示")}</Button>
+  </div>;
+}
 
 type Props = {
   isActive: boolean;
   isDesktop: boolean;
   fs: boolean;
   clean: boolean;
+  controlsLocked: boolean;
+  rotated: boolean;
   mode: "home" | "context";
   kind: "video" | "post";
   title: string;
@@ -31,14 +46,10 @@ type Props = {
   hevcUrl: string;
   preferHevc: boolean;
   setPreferHevc: (v: boolean) => void;
-  swipeEp: boolean;
-  setSwipeEp: (v: boolean) => void;
   landscapeVideo: boolean;
   capsuleOn: boolean;
   zoom: { s: number; x: number; y: number; g: boolean };
   setZoom: Dispatch<SetStateAction<{ s: number; x: number; y: number; g: boolean }>>;
-  portraitFit: "contain" | "cover";
-  setPortraitFit: Dispatch<SetStateAction<"contain" | "cover">>;
   liked: boolean;
   collected: boolean;
   likePending: boolean;
@@ -51,6 +62,7 @@ type Props = {
   loadingStatus: string;
   onLogin: () => void;
   onNetwork: () => void;
+  onTogglePlay: () => void;
   waiting: boolean;
   err: string;
   scrub: { pct: number; target: number } | null;
@@ -64,6 +76,14 @@ type Props = {
   onLike: () => Promise<void>;
   onFav: () => Promise<void>;
   setPanel: Dispatch<SetStateAction<FeedPanel>>;
+  openTag: (tag: string) => void;
+  openTagMenu: (selected?: string[]) => void;
+  muted: boolean;
+  onToggleMuted: () => void;
+  swipeEnabled: boolean;
+  swipeEp: boolean;
+  onToggleSwipe: () => void;
+  onLock: () => void;
   onBarDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onBarMove: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onBarUp: (e: ReactPointerEvent<HTMLDivElement>, cancelled?: boolean) => void;
@@ -72,12 +92,13 @@ type Props = {
 };
 
 export default function FeedItemChrome({
-  isActive, isDesktop, fs, clean, mode, kind, title, index, effectiveLength, bottomInset,
-  curEp, duration, meta, post, hevcUrl, preferHevc, setPreferHevc, swipeEp, setSwipeEp,
-  landscapeVideo, capsuleOn, zoom, setZoom, portraitFit, setPortraitFit,
+  isActive, isDesktop, fs, clean, controlsLocked, rotated, mode, kind, title, index, effectiveLength, bottomInset,
+  curEp, duration, meta, post, hevcUrl, preferHevc, setPreferHevc,
+  landscapeVideo, capsuleOn, zoom, setZoom,
   liked, collected, likePending, collectPending, heartBurst, likeCount, collectCount,
-  paused, waiting, showFeedback, loadingStatus, onLogin, onNetwork, err, scrub, barRef, barPct, playbackClock,
-  onBack, enterFs, stepDir, canStep, onLike, onFav, setPanel,
+  paused, onTogglePlay, waiting, showFeedback, loadingStatus, onLogin, onNetwork, err, scrub, barRef, barPct, playbackClock,
+  onBack, enterFs, stepDir, canStep, onLike, onFav, setPanel, openTag, openTagMenu,
+  muted, onToggleMuted, swipeEnabled, swipeEp, onToggleSwipe, onLock,
   onBarDown, onBarMove, onBarUp, onRetryStream, toast,
 }: Props) {
   const episodes = meta.episodes;
@@ -92,8 +113,7 @@ export default function FeedItemChrome({
           <Button type="button" onClick={() => setPanel("article")}
             className="flex items-center gap-2 h-11 px-5 rounded-full text-[14px] font-semibold pressable elev-3"
             style={{ background: "rgba(255,255,255,.94)", color: "#0b0e15" }}>
-            <IFileText size={17} />查看图文详情
-          </Button>
+            <IFileText size={17} />{tr("查看图文详情")}</Button>
         </div>
       )}
 
@@ -101,13 +121,13 @@ export default function FeedItemChrome({
       {!fs && !clean && mode === "context" ? (
         isDesktop ? (
           <div className="desktop-context-header">
-            <Button onClick={onBack} aria-label="返回"><IBack size={17} /></Button>
+            <Button onClick={onBack} aria-label={tr("返回")}><IBack size={17} /></Button>
             <span>{title}</span>
             <small>{index + 1} / {effectiveLength}</small>
           </div>
         ) : (
           <div className="absolute inset-x-0 z-20 flex items-center gap-2 px-2.5 pointer-events-none" style={{ top: "calc(var(--sat, 0px) + 8px)", paddingRight: 164 }}>
-            <Button onClick={onBack} aria-label="返回" className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1 pointer-events-auto"><IBack size={20} /></Button>
+            <Button onClick={onBack} aria-label={tr("返回")} className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1 pointer-events-auto"><IBack size={20} /></Button>
             <span className="text-[15px] font-semibold hg-ink hg-ov-shadow truncate">{title}</span>
           </div>
         )
@@ -118,94 +138,55 @@ export default function FeedItemChrome({
           {index + 1} / {effectiveLength}
         </span>
       )}
+      {!isDesktop && kind === "video" && clean && !controlsLocked && (
+        <Button aria-label={tr("锁定屏幕")} title={tr("锁定屏幕")} onClick={onLock} className="mobile-clean-lock"
+          style={{ right: playbackLockRightInset(rotated, fs) }}>
+          <ILockF size={19} />
+        </Button>
+      )}
 
-      {/* 竖屏下的快捷操作（#19）：
-          横版视频 → 保持原样，居中横排一条（画面上下有黑边，居中不压主体）；
-          竖版视频 → 缩放还原胶囊锚定在顶部安全区下方，兼容小屏与分屏模式。
-          显隐用 opacity + 轻微位移过渡（不卸载），净屏/全屏时慢慢淡出。 */}
+      {/* Pinch-zoom reset stays available; fill and rotate shortcuts are intentionally removed
+          because fill lives in playback settings and fullscreen has its own bottom-right control. */}
       {!isDesktop && (
-        <div
-          className={landscapeVideo
-            ? "absolute z-30 w-max whitespace-nowrap"
-            : "absolute z-30"}
-          aria-hidden={!(isActive && capsuleOn)}
+        <div className="absolute z-30" aria-hidden={!(isActive && capsuleOn)}
           style={{
-            left: landscapeVideo ? "50%" : undefined,
-            right: landscapeVideo ? undefined : "calc(var(--sar, 0px) + 12px)",
-            maxWidth: landscapeVideo ? "calc(100% - var(--sal, 0px) - var(--sar, 0px) - 32px)" : undefined,
-            top: landscapeVideo ? "64%" : "calc(var(--sat, 0px) + 56px)",
-            transform: landscapeVideo
-              ? `translate(-50%, ${isActive && capsuleOn ? 0 : 10}px)`
-              : `translateY(${isActive && capsuleOn ? 0 : -6}px)`,
+            right: "calc(var(--sar, 0px) + 12px)",
+            top: "calc(var(--sat, 0px) + 56px)",
+            transform: `translateY(${isActive && capsuleOn ? 0 : -6}px)`,
             opacity: isActive && capsuleOn ? 1 : 0,
             pointerEvents: isActive && capsuleOn ? "auto" : "none",
             transition: "opacity .38s cubic-bezier(.4,0,.2,1), transform .38s cubic-bezier(.4,0,.2,1)",
           }}>
-          <div className={landscapeVideo
-            ? "inline-flex items-center gap-0.5 min-h-8 px-1 rounded-full backdrop-blur-xl elev-2 whitespace-nowrap"
-            : "flex flex-col items-stretch gap-1 p-1 rounded-[18px] backdrop-blur-xl elev-2"}
+          <div className="flex flex-col items-stretch gap-1 p-1 rounded-[18px] backdrop-blur-xl elev-2"
             style={{ background: "rgba(12,15,22,.58)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.09)" }}>
-            {landscapeVideo && (
-              <>
-                <Button type="button" onClick={() => {
-                  if (zoom.s > 1.05) { setZoom({ s: 1, x: 0, y: 0, g: false }); setPortraitFit("contain"); }
-                  else setPortraitFit((f) => (f === "contain" ? "cover" : "contain"));
-                }} className="whitespace-nowrap flex items-center justify-center gap-1 min-h-0 h-[26px] px-3 rounded-full text-[12px] font-semibold pressable transition-colors duration-150"
-                  style={{ color: "rgba(255,255,255,.9)" }}>
-                  {zoom.s > 1.05 ? `还原 ${zoom.s.toFixed(1)}x` : portraitFit === "contain" ? "铺满" : "适应"}
-                </Button>
-                <Button type="button" onClick={() => enterFs(true)}
-                  className="whitespace-nowrap flex items-center justify-center gap-1 min-h-0 h-[26px] px-3 rounded-full text-[12px] font-semibold pressable transition-colors duration-150"
-                  style={{ color: "rgba(255,255,255,.9)" }}>
-                  <IExpand size={13} /><span>横屏</span>
-                </Button>
-              </>
-            )}
-            {!landscapeVideo && zoom.s > 1.05 && (
+            {zoom.s > 1.05 && (
               <Button type="button" onClick={() => setZoom({ s: 1, x: 0, y: 0, g: false })}
                 className="whitespace-nowrap flex items-center justify-center gap-1 min-h-0 h-[26px] px-3 rounded-full text-[12px] font-semibold pressable transition-colors duration-150"
-                style={{ color: "rgba(255,255,255,.9)" }}>
-                还原 {zoom.s.toFixed(1)}x
-              </Button>
+                style={{ color: "rgba(255,255,255,.9)" }}>{tr("还原 {0}x", zoom.s.toFixed(1))}</Button>
             )}
           </div>
         </div>
       )}
 
-      {/* 右侧操作栏（移动端）：切集 / 画质 / 点赞 / 收藏 / 评论 / 全屏
-          颜色写死不跟主题走：浅色主题下这些字必须仍是白色 */}
+      {/* Mobile social actions and the playback settings entry. */}
       {!fs && !clean && !isDesktop && (
-        <div className="mobile-video-action-rail absolute z-30 flex flex-col items-center gap-[16px]"
-          style={{ right: "calc(var(--sar, 0px) + 12px)", bottom: `calc(var(--sab, 0px) + ${bottomInset + 44}px)` }}>
-          {episodes.length > 1 && (
-            <Button type="button" onClick={() => { setSwipeEp(!swipeEp); toast(swipeEp ? "上下划切集已关闭" : "上下划切集已开启"); }}
-              className="flex flex-col items-center gap-1 pressable" aria-pressed={swipeEp} aria-label="上下划切集开关">
-              <IVertSwap size={26} className={swipeEp ? "hg-gold hg-ov-shadow" : "hg-ink hg-ov-shadow"} />
-              <span className="text-[12px] hg-ink-2 hg-ov-shadow" style={{ color: swipeEp ? "#f3c969" : undefined }}>切集</span>
-            </Button>
-          )}
-          {hevcUrl && (
-            <Button type="button" onClick={() => { setPreferHevc(!preferHevc); toast(preferHevc ? "已切回标准画质" : "已切换高清 HEVC", "ok"); }}
-              className="flex flex-col items-center gap-1 pressable" aria-pressed={preferHevc} aria-label="画质切换">
-              <span className={`flex items-center justify-center h-[22px] min-w-[30px] px-1 rounded-md text-[12px] font-bold hg-ov-shadow ${preferHevc ? "bg-white text-[#191919]" : "hg-chip hg-ink-2"}`}>{preferHevc ? "HD" : "标清"}</span>
-              <span className="text-[12px] hg-ink-2 hg-ov-shadow" style={{ color: preferHevc ? "#fff" : undefined }}>{preferHevc ? "高清" : "标清"}</span>
-            </Button>
-          )}
-          <Button onClick={() => void onLike()} disabled={likePending} aria-busy={likePending} className="flex flex-col items-center gap-1 pressable" aria-pressed={liked} aria-label="点赞">
+        <div className="mobile-video-action-rail absolute z-30 flex flex-col items-center gap-[10px]"
+          style={{ right: "calc(var(--sar, 0px) + 12px)", bottom: `calc(var(--sab, 0px) + ${bottomInset}px + var(--mobile-action-rail-clearance, 108px))` }}>
+          <Button onClick={() => void onLike()} disabled={likePending} aria-busy={likePending} className="mobile-action-like flex flex-col items-center gap-1 pressable" aria-pressed={liked} aria-label={tr("点赞")}>
             {liked ? <IHeartF size={27} className="text-neon" /> : <IHeart size={27} className="hg-ink hg-ov-shadow" />}
             <span className="text-[12px] text-white/90 tabular-nums">{fmt(likeCount)}</span>
           </Button>
-          <Button onClick={() => void onFav()} disabled={collectPending} aria-busy={collectPending} className="flex flex-col items-center gap-1 pressable" aria-pressed={collected} aria-label="收藏">
+          <Button onClick={() => void onFav()} disabled={collectPending} aria-busy={collectPending} className="mobile-action-favorite flex flex-col items-center gap-1 pressable" aria-pressed={collected} aria-label={tr("收藏")}>
             {collected ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
             <span className="text-[12px] text-white/90 tabular-nums">{fmt(collectCount)}</span>
           </Button>
-          <Button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable" aria-label={`评论 ${fmt(meta.comment)} 条`}>
+          <Button onClick={() => setPanel("comments")} className="mobile-action-comments flex flex-col items-center gap-1 pressable" aria-label={tr("评论 {0} 条", fmt(meta.comment))}>
             <ICommentF size={26} className="hg-ink hg-ov-shadow" />
             <span className="text-[12px] hg-ink-2 hg-ov-shadow tabular-nums">{fmt(meta.comment)}</span>
           </Button>
-          <Button onClick={() => enterFs(landscapeVideo)} className="flex flex-col items-center gap-1 pressable" aria-label="全屏">
-            <IExpand size={26} className="hg-ink hg-ov-shadow" />
-            <span className="text-[12px] hg-ink-2 hg-ov-shadow">全屏</span>
+          <Button onClick={() => setPanel("more")} className="mobile-action-more flex flex-col items-center gap-1 pressable" aria-label={tr("更多播放设置")}>
+            <IMore size={26} className="hg-ink hg-ov-shadow" />
+            <span className="text-[12px] hg-ink-2 hg-ov-shadow">{tr("更多")}</span>
           </Button>
         </div>
       )}
@@ -214,36 +195,36 @@ export default function FeedItemChrome({
       {!fs && !clean && isDesktop && (
         <div className="absolute z-20 flex flex-col items-center desktop-social">
           <div className="desktop-browse-inline">
-            <Button onClick={() => stepDir(-1)} disabled={!canStep(-1)} aria-label="上一个" title="上一个 ↑">
+            <Button onClick={() => stepDir(-1)} disabled={!canStep(-1)} aria-label={tr("上一个")} title={tr("上一个 ↑")}>
               <IChevronUp size={19} strokeWidth={1.8} />
             </Button>
-            <Button onClick={() => stepDir(1)} disabled={!canStep(1)} aria-label="下一个" title="下一个 ↓">
+            <Button onClick={() => stepDir(1)} disabled={!canStep(1)} aria-label={tr("下一个")} title={tr("下一个 ↓")}>
               <IChevronDown size={19} strokeWidth={1.8} />
             </Button>
             <small>{String(index + 1).padStart(2, "0")} / {String(effectiveLength).padStart(2, "0")}</small>
           </div>
 
-          <Button onClick={() => void onLike()} disabled={likePending} aria-busy={likePending} aria-label="点赞" className="flex flex-col items-center gap-1 pressable" aria-pressed={liked}>
+          <Button onClick={() => void onLike()} disabled={likePending} aria-busy={likePending} aria-label={tr("点赞")} className="flex flex-col items-center gap-1 pressable" aria-pressed={liked}>
             <span key={heartBurst} className={heartBurst ? "a-pop" : ""}>
               {liked ? <IHeartF size={30} className="text-neon" /> : <IHeart size={30} className="text-white tsh" />}
             </span>
             <span className="text-[12px] text-white/90 tabular-nums">{fmt(likeCount)}</span>
           </Button>
 
-          <Button onClick={() => setPanel("comments")} aria-label={`评论 ${fmt(meta.comment)} 条`} className="flex flex-col items-center gap-1 pressable">
+          <Button onClick={() => setPanel("comments")} aria-label={tr("评论 {0} 条", fmt(meta.comment))} className="flex flex-col items-center gap-1 pressable">
             <ICommentF size={27} className="text-white tsh" />
             <span className="text-[12px] text-white/90 tabular-nums">{fmt(meta.comment)}</span>
           </Button>
 
-          <Button onClick={() => void onFav()} disabled={collectPending} aria-busy={collectPending} aria-label="收藏" className="flex flex-col items-center gap-1 pressable" aria-pressed={collected}>
+          <Button onClick={() => void onFav()} disabled={collectPending} aria-busy={collectPending} aria-label={tr("收藏")} className="flex flex-col items-center gap-1 pressable" aria-pressed={collected}>
             {collected ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
             <span className="text-[12px] text-white/90 tabular-nums">{fmt(collectCount)}</span>
           </Button>
 
           {kind === "video" && (
-            <Button onClick={() => setPanel("episodes")} aria-label="选集" className="flex flex-col items-center gap-1 pressable">
+            <Button onClick={() => setPanel("episodes")} aria-label={tr("选集")} className="flex flex-col items-center gap-1 pressable">
               <IList size={26} className="text-white tsh" />
-              <span className="text-[12px] text-white/90">选集</span>
+              <span className="text-[12px] text-white/90">{tr("选集")}</span>
             </Button>
           )}
         </div>
@@ -256,28 +237,25 @@ export default function FeedItemChrome({
             <span className="text-[16px] font-bold text-white tsh truncate">@{meta.author}</span>
             {episodes.length > 0 && (
               <span className="shrink-0 px-1.5 py-px rounded-md text-[12px] font-bold text-white"
-                style={{ background: "rgba(255,255,255,.16)" }}>
-                第 {curEp}/{episodes.length} 集
-              </span>
+                style={{ background: "rgba(255,255,255,.16)" }}>{tr("第 {0}/{1} 集", curEp, episodes.length)}</span>
             )}
             {hevcUrl && (
               <Button type="button" aria-pressed={preferHevc}
-                onClick={() => { setPreferHevc(!preferHevc); toast(preferHevc ? "已切回标准画质" : "已切换高清 HEVC", "ok"); }}
+                onClick={() => { setPreferHevc(!preferHevc); toast(preferHevc ? tr("已切回标准画质") : tr("已切换高清 HEVC"), "ok"); }}
                 className={`shrink-0 min-h-0 h-[18px] px-1.5 rounded-md text-[12px] font-bold flex items-center pressable transition-colors ${preferHevc ? "bg-white text-[#191919]" : "text-white border border-white/30"}`}>
-                {preferHevc ? "HD" : "标清"}
+                {preferHevc ? "HD" : tr("标清")}
               </Button>
             )}
             {!!meta.score && (
-              <span className="shrink-0 text-[12px] font-bold hg-gold hg-ov-shadow">{meta.score.toFixed(1)} 分</span>
+              <span className="shrink-0 text-[12px] font-bold hg-gold hg-ov-shadow">{tr("{0} 分", meta.score.toFixed(1))}</span>
             )}
           </div>
 
           <p className="mt-1 text-[14px] leading-snug hg-ink-2 hg-ov-shadow clamp-2">{meta.title}</p>
 
-          <p className="mt-1 text-[12px] leading-relaxed hg-ink-4 clamp-1">{meta.desc || "暂无简介"}</p>
+          <p className="mt-1 text-[12px] leading-relaxed hg-ink-4 clamp-1">{meta.desc || tr("暂无简介")}</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button aria-label="视频详情" onClick={() => setPanel("detail")} className="min-h-11 px-4 rounded-full hg-chip text-[12px] inline-flex items-center gap-1">
-              详情与标签<IChevR size={13} />
+            <Button aria-label={tr("视频详情")} onClick={() => setPanel("detail")} className="min-h-11 px-4 rounded-full hg-chip text-[12px] inline-flex items-center gap-1">{tr("详情与标签")}<IChevR size={13} />
             </Button>
           </div>
         </div>
@@ -287,19 +265,17 @@ export default function FeedItemChrome({
       {!fs && !isDesktop && (!clean || scrubbing) && (
         <div className="absolute inset-x-0 z-20 pointer-events-none" style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}>
           {!clean && (
-            <div className={`mobile-video-meta-copy relative pb-2 flex items-center gap-2 transition-opacity duration-150 ${scrubbing ? "opacity-35" : ""}`}>
-              <p className="flex-1 min-w-0 text-[15px] font-semibold leading-snug hg-ink-2 hg-ov-shadow-strong clamp-2">{meta.title}</p>
+            <div className={`mobile-video-meta-copy relative pb-1 flex items-center gap-2 transition-opacity duration-150 ${scrubbing ? "opacity-35" : ""}`}>
+              <div className="flex-1 min-w-0">
+                {!!meta.author && <div className="mobile-video-author">@{meta.author}</div>}
+                <p className="text-[15px] font-semibold leading-snug hg-ink-2 hg-ov-shadow-strong clamp-2">{meta.title}</p>
+                {kind === "video" && <div className="mobile-video-episode">{tr("第{0}集", curEp)}</div>}
+                <CurrentVideoTags tags={meta.tags} onOpen={openTag} onBlock={tag => openTagMenu([tag])} />
+                {meta.tags.length > 0 && <MobileTagHint />}
+              </div>
             </div>
           )}
           <div className="relative pt-1.5 pb-2.5">
-            {!clean && (
-              <div className={`mobile-video-meta-copy flex flex-wrap items-center gap-2 transition-opacity duration-150 ${scrubbing ? "opacity-35" : ""}`}>
-                <Button aria-label="视频详情" onClick={() => setPanel("detail")}
-                  className="min-h-11 flex items-center gap-0.5 text-[12px] font-medium hg-ink-3 hg-ov-shadow-strong pressable pointer-events-auto">
-                  {kind === "post" ? "详情与标签" : `详情 · 第 ${curEp} 集`}<IChevR size={11} />
-                </Button>
-              </div>
-            )}
             {isActive && <div ref={barRef} data-seek-bar data-scrubbing={scrubbing || undefined}
               className="-mt-0.5 -mb-2.5 relative pointer-events-auto"
               style={{
@@ -340,6 +316,22 @@ export default function FeedItemChrome({
                 </div>
               )}
             </div>}
+            {!clean && <div className={mode === "home" && kind === "video" ? "mobile-playback-dock mobile-playback-dock-home" : "mobile-playback-dock"}>
+              {kind === "video" ? <Button aria-label={episodes.length ? tr("选集，共 {0} 集", episodes.length) : tr("选集")} onClick={() => setPanel("episodes")} className="mobile-playback-episodes">
+                <IList size={18} /><span>{tr("选集{0}", episodes.length > 0 ? tr(" · 全{0}集", episodes.length) : "")}</span><IChevronUp size={16} />
+              </Button> : <Button aria-label={tr("图文详情")} onClick={() => setPanel("detail")} className="mobile-playback-episodes">
+                <IFileText size={18} /><span>{tr("图文详情")}</span><IChevronUp size={16} />
+              </Button>}
+              <Button onClick={onToggleMuted} aria-label={muted ? tr("取消静音") : tr("静音")} aria-pressed={muted}
+                className="mobile-playback-quick">
+                {muted ? <IVolMute size={18} /> : <IVol size={18} />}
+              </Button>
+              {swipeEnabled && <Button onClick={onToggleSwipe} aria-label={swipeEp ? tr("关闭上下划切集") : tr("开启上下划切集")} aria-pressed={swipeEp}
+                className={`mobile-playback-quick ${swipeEp ? "is-on" : ""}`}>
+                <IVertSwap size={18} />
+              </Button>}
+              <Button aria-label={tr("全屏")} onClick={() => enterFs(landscapeVideo)} className="mobile-playback-fullscreen"><IExpand size={19} /></Button>
+            </div>}
           </div>
         </div>
       )}
@@ -347,10 +339,11 @@ export default function FeedItemChrome({
       {/* 暂停 / 缓冲 */}
       {isActive && paused && !loadingStatus && !scrubbing && !err && (
         <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
-          <span className="w-[66px] h-[66px] rounded-full flex items-center justify-center backdrop-blur-md"
+          <Button type="button" aria-label={tr("播放")} onClick={onTogglePlay}
+            className="w-[66px] h-[66px] rounded-full flex items-center justify-center backdrop-blur-md pointer-events-auto pressable"
             style={{ background: "rgba(0,0,0,.55)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.12)" }}>
             <IPlayF size={28} className="hg-ink ml-0.5" />
-          </span>
+          </Button>
         </div>
       )}
       {showFeedback && <PlaybackFeedback error={err} waiting={(waiting && !paused) || !!loadingStatus} status={loadingStatus}

@@ -1,3 +1,4 @@
+import { mergeFavoriteChanges } from "./libraryChanges";
 import type { AccountData } from "../model/accountData";
 
 // Aliases are created only after native boot confirms a retained session. Keep
@@ -27,19 +28,29 @@ export function mergeRebasedAccounts(source: AccountData, target?: AccountData):
     const latest = history.get(id);
     if (latest && latest.at > dirtyHistory[id].at) dirtyHistory[id] = { ep: latest.ep, at: latest.at };
   }
+  const historyRemovedAt = { ...target.historyRemovedAt };
+  for (const [id, at] of Object.entries(source.historyRemovedAt || {})) historyRemovedAt[+id] = Math.max(historyRemovedAt[+id] || 0, at);
+  for (const [id, at] of Object.entries(historyRemovedAt)) {
+    if ((history.get(+id)?.at ?? 0) <= at) history.delete(+id);
+    if ((dirtyHistory[+id]?.at ?? 0) <= at) delete dirtyHistory[+id];
+  }
+  const favoriteChanges = mergeFavoriteChanges(source.favoriteChanges, target.favoriteChanges);
+  const postFavoriteChanges = mergeFavoriteChanges(source.postFavoriteChanges, target.postFavoriteChanges);
+  const favs = union(source.favs, target.favs).filter(id => favoriteChanges[id]?.on !== false);
   const favEpCounts = { ...target.favEpCounts };
   for (const [id, count] of Object.entries(source.favEpCounts || {})) {
     favEpCounts[Number(id)] = Math.max(favEpCounts[Number(id)] || 0, count);
   }
+  for (const id of Object.keys(favEpCounts)) if (!favs.includes(+id)) delete favEpCounts[+id];
   const episodes = [...(source.likeEpisodes || []), ...(target.likeEpisodes || [])];
   return {
-    ...source, favEpCounts,
-    favs: union(source.favs, target.favs), likes: union(source.likes, target.likes),
-    follows: union(source.follows, target.follows), postFavs: union(source.postFavs, target.postFavs),
+    ...source, favEpCounts, favoriteChanges, postFavoriteChanges, historyRemovedAt,
+    favs, likes: union(source.likes, target.likes),
+    follows: union(source.follows, target.follows), postFavs: union(source.postFavs, target.postFavs).filter(id => postFavoriteChanges[id]?.on !== false),
     postLikes: union(source.postLikes, target.postLikes),
     likeEpisodes: episodes.length ? [...new Map(episodes.map(row => [`${row.video_id}:${row.ep}`, row])).values()] : undefined,
     history: [...history.values()].sort((a, b) => b.at - a.at), dirtyHistory,
     // Preserve local seconds even if an older/empty remote history is returned.
-    localHistory: union(union(source.localHistory, target.localHistory), [...history.keys()]),
+    localHistory: [...history.keys()],
   };
 }

@@ -1,3 +1,4 @@
+import { tr } from "../../shared/i18n";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type Hls from "hls.js";
 
@@ -66,18 +67,18 @@ export function usePlaybackWatchdog(videoRef: RefObject<HTMLVideoElement | null>
       }
       elapsed += delta;
       if (elapsed < TIMEOUT_MS && !cycle.networkError) {
-        if (elapsed >= 8_000 && cycle.attempts === 0) setStatus("加载较慢，正在等待视频数据…");
+        if (elapsed >= 8_000 && cycle.attempts === 0) setStatus(tr("加载较慢，正在等待视频数据…"));
         return;
       }
       if (cycle.attempts >= MAX_RETRIES) {
         trace("loading.failed", { attempts: cycle.attempts, network_error: cycle.networkError });
         fail(cycle.networkError
-          ? "视频网络连接失败，自动重试 2 次仍未恢复。请检查网络或切换线路后重试。"
-          : "视频加载超时，自动重试 2 次仍无播放进展。可能是网络不稳定或片源响应慢，请重试或切换线路。");
+          ? tr("视频网络连接失败，自动重试 2 次仍未恢复。请检查网络或切换线路后重试。")
+          : tr("视频加载超时，自动重试 2 次仍无播放进展。可能是网络不稳定或片源响应慢，请重试或切换线路。"));
         return;
       }
       cycle.attempts++; cycle.automatic = true;
-      setStatus(`视频加载中断，正在自动重试（${cycle.attempts}/${MAX_RETRIES}）…`);
+      setStatus(tr("视频加载中断，正在自动重试（{0}/{1}）…", cycle.attempts, MAX_RETRIES));
       trace("loading.retry", { attempt: cycle.attempts, time: video.currentTime });
       recovery.retry("loading_timeout");
       // The next effect owns the new connection; no second retry in this effect.

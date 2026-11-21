@@ -22,7 +22,10 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
 - [`src/features/feed/Panels.tsx`](../../src/features/feed/Panels.tsx) 的
   `CommentsPanel`、`EpisodesPanel`、`ArticlePanel`；
   [`src/features/feed/VideoDetailsPanel.tsx`](../../src/features/feed/VideoDetailsPanel.tsx)。
+- [`src/features/posts/Posts.tsx`](../../src/features/posts/Posts.tsx) 的 `PostDetail`：
+  吃瓜详情的正文/播放数据 effect 与线路事件下的后台刷新。
 - [`src/shared/model/store.tsx`](../../src/shared/model/store.tsx) 的 `lineEpoch` 和 `accountScope` 传递；
+  [`src/shared/model/store.tsx`](../../src/shared/model/store.tsx) 暴露的 `accountGeneration` 与
   [`src/shared/model/accountData.ts`](../../src/shared/model/accountData.ts) 的 `generation`；
   [`src/shared/model/contentPreferences.ts`](../../src/shared/model/contentPreferences.ts) 的 `blockReason`。
 - 后端读取：[`src-tauri/src/api/feed.rs`](../../src-tauri/src/api/feed.rs)、
@@ -80,6 +83,8 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
 
 ## 约束与失败行为
 
+- [创作者主页](../../src/features/account/User.tsx)按当前登录账号 ID 判断是否为本人；
+  本人主页隐藏「关注」，并在处理关注操作前拦截本人目标。其他创作者主页仍可关注或取消关注。
 - `details`/`posts` 是 Feed 实例的局部状态，不是跨应用持久缓存；页面销毁后重新读取。
   这避免把旧标签或旧正文带进新会话，但也意味着返回 Feed 时可能重新请求。
 - 详情读失败不能标记 `checked`，不能把 `tags` 当空数组；启用过滤时不能让播放器抢跑。
@@ -98,12 +103,32 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
 
 - 手势 overlay 的挂载只取决于条目是否活跃，不取决于 `playUrl` 是否已解析；否则切集
   过渡期的触摸会被列表原生滚动吃掉（2.2.0 反馈的连划跳视频根因）。
+- 标准版「我的」卡片支持电脑右键、手机长按进入多选，继续点按切换选择；收藏页逐项取消收藏，历史页
+  调用 `removeHistory()` 只删除选中记录。批量操作需确认，切换收藏/历史或短剧/帖子会清空选择；
+  收藏部分失败时保留失败项供重试，未选中的观看记录和收藏互不影响。批量取消收藏在开始时捕获
+  `accountGeneration` 与 `actionRevision`；每项请求前后都校验二者，线路/代理事件或组件卸载会使修订号失效，
+  随即停止未发送项并抑制旧批次的错误、完成状态与 toast。账号代次检查独立于组件重挂载，避免 cleanup
+  执行前队列继续用新账号发起下一项。
+- 标准版「我的」收藏与观看历史保持原有网格列数；滚动容器接近底部哨兵（提前 300px）时
+  每次扩展 12 项，不再显示「加载更多」按钮。
 - 标准版「我的 → 收藏 → 短剧」重新激活时，按已展现的列表范围后台刷新详情，每批最多 6 部。
   展开更多时读取新增条目；同一激活期间已刷新的条目不重复请求。旧卡片与观看断点保留，
   刷新失败不将旧集数当空数据，离开页面或切线后丢弃在途结果。
-- 上下划切集的提示 toast 带 `tag="episode"`（`useFeedTouchGestures.ts`）；`store.tsx` 的
-  `pushToastItem` 对同 tag 原地替换内容并重置 2200ms 计时，快速连续划集只显示一张最新卡片，
-  不堆叠、不重放入场动画；无 tag 的 toast 仍按原逻辑堆叠（最多 3 张）。
+- 吃瓜详情（[`src/features/posts/Posts.tsx`](../../src/features/posts/Posts.tsx) 的
+  `PostDetail`）区分「换帖子/账号」与「仅线路代次变化」：`hg:line-changed`/`hg:proxy-changed`
+  （自动选线切换、保存代理）推进 `lineEpoch` 时，只有 `id`/`accountScope` 变化才清空重置；
+  仅 `lineEpoch` 变化保留已显示的 `post`、正文与滚动位置，后台重拉 `api_post` 与
+  `api_post_playback`，播放地址解析失败保留旧地址不清空。否则整页回加载态会卸载播放器
+  portal，视频从 0 重播（issue #165）。
+- 吃瓜详情的正文仅在正文内容或安全模式改变时重新清洗。渲染时复用同一个
+  `dangerouslySetInnerHTML` 属性对象；滚动更新「阅读进度」以及刷新得到同一正文时不替换
+  图片节点，避免懒加载图片反复消失、重载和撑开布局（issue #165）。
+- 播放页状态提示（上下划切集、剧集边界、上下划切集开关、屏幕锁定/解锁）统一带 `tag="playback-hint"`（`Feed.tsx`、`FeedPlayerShellChrome.tsx`、`useFeedTouchGestures.ts` 与 `useFeedViewport.ts`）；`store.tsx` 的
+  `pushToastItem` 对同 tag 原地替换内容并重置 2200ms 计时，快速连续操作只显示一张最新卡片，
+  不堆叠、不重放入场动画；无 tag 的普通 toast 仍按原逻辑堆叠（最多 3 张）。移动端全屏切集提示通过 `pendingEpisodeToast` state 等待新集解码宽高后再弹出，避免横屏旋转舞台就绪前在竖屏位置提前闪现。桌面端开启「上下划切集」或处于全屏时，
+  `useFeedViewport` 在播放区滚动容器上注册非被动 `wheel` 监听（`{ passive: false }`），按位移阈值与冷却时间将
+  滚轮/触控板纵向滚动转为单步 `stepDir`，避免浏览器原生纵向滚动直接切到下一部剧；底部控制栏「下一集 ↓ / 下一部 ↓」
+  按钮同样遵循 `swipeEp` 开关。
 
 ## 验证命令
 
@@ -112,11 +137,19 @@ pnpm build
 pnpm test:smoke
 pnpm test:api-loading
 pnpm test:playback --scenarios feedback
+pnpm test:post-flicker
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
 `test:smoke` 当前包含 `api-loading`、`storage-migration`、`line-selection`、
-`diagnostic-copy`。浏览器 fixture 使用 mock Tauri IPC 且阻断外部请求，
+`diagnostic-copy`、`ui-feedback`、`home-controls`、`account-sync`（最后运行）。账号切换期间批量取消收藏的
+fixture 位于 `scripts/test-account-sync-empty-state.mjs`；需要单独运行时可执行
+`node scripts/test-account-sync-empty-state.mjs`。浏览器 fixture 使用 mock Tauri IPC 且阻断外部请求，
 不能证明真实上游的正文结构或账号接口；真实接口变化需要另加网络隔离的 fixture 或手动验证。
 
 系统旋转与容器缩放不构成条目选择：布局校准固定当前内容 ID，并使旧滚动候选失效。续播入口和写入时机见 [播放契约](playback.md)。
+`test:post-flicker` 是吃瓜详情线路/代理事件的回归（issue #165）：浏览器 fixture，
+mock IPC，本地 ffmpeg HLS 分片，不访问上游；需要 ffmpeg，归入播放诊断
+（`pnpm test:playback --scenarios post-flicker`，CI 的 core 分片），不进 smoke。
+账号切换 fixture 会挂起第一项取消收藏请求，切换账号后再释放，并检查没有发送第二项、没有向新账号
+写入旧结果或弹出旧批次成功提示；该回归随 `pnpm test:smoke` 的 `account-sync` 套件运行。

@@ -1,4 +1,6 @@
-export const AUTH_EXPIRED_MESSAGE = "登录已失效，请重新登录";
+import { N_ } from "../i18n";
+
+export const AUTH_EXPIRED_MESSAGE = N_("登录已失效，请重新登录");
 
 // Only authenticated account operations can invalidate a session. A public
 // content request or a failed password submission must not expire another login.

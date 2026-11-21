@@ -3,8 +3,10 @@ import { api } from "../api/api";
 import type { AccountHistoryItem, AccountIdentity, AccountInteractions, User } from "../api/types";
 import { AUTH_EXPIRED_MESSAGE, captureAuthFailure, observeAuthFailures } from "../api/authFailure";
 import { accountKey, mergeRebasedAccounts } from "../storage/accountRebase";
+import { favoriteChanges, historyRemovals, syncedFavorites, type FavoriteChanges } from "../storage/libraryChanges";
 import { credentialFor, forgetCredential } from "./sessionCredential";
 import type { WatchProgress } from "./store";
+import { N_, tr } from "../i18n";
 
 type Kind = "video" | "post";
 export type GuestData = {
@@ -24,12 +26,15 @@ export function pickGuestData(data: GuestData): GuestData {
 export type AccountData = GuestData & {
   postLikes: number[]; postFavs: number[];
   likeEpisodes?: { video_id: number; ep: number }[];
+  favoriteChanges?: FavoriteChanges;
+  postFavoriteChanges?: FavoriteChanges;
+  historyRemovedAt?: Record<number, number>;
   dirtyHistory: Record<number, { ep: number; at: number }>;
   localHistory: number[];
 };
 type SyncState = { busy: boolean; error: string; lastSynced: number; favoritesKnown: boolean };
 const ACCOUNT_KEY = "hghubx_accounts_v1";
-const PENDING_LINE = "登录信息已保留，正在等待验证线路。恢复连接后会自动同步。";
+const PENDING_LINE = N_("登录信息已保留，正在等待验证线路。恢复连接后会自动同步。");
 const empty = (): AccountData => ({ likes: [], favs: [], follows: [], history: [], postLikes: [], postFavs: [], dirtyHistory: {}, localHistory: [] });
 const ids = (value: unknown): number[] => Array.isArray(value)
   ? [...new Set(value.filter((id): id is number => Number.isSafeInteger(id) && id > 0))] : [];
@@ -54,17 +59,26 @@ function sanitize(value: Partial<AccountData> | null | undefined): AccountData {
   return { likes: ids(data.likes), favs, follows: ids(data.follows), postLikes: ids(data.postLikes), postFavs: ids(data.postFavs),
     history: Array.isArray(data.history) ? data.history.filter(validProgress) : [], localHistory: ids(data.localHistory),
     likeEpisodes: Array.isArray(data.likeEpisodes) ? data.likeEpisodes.filter(row => Number.isSafeInteger(row?.video_id) && row.video_id > 0 && Number.isSafeInteger(row.ep) && row.ep > 0) : undefined,
+    favoriteChanges: favoriteChanges(data.favoriteChanges), postFavoriteChanges: favoriteChanges(data.postFavoriteChanges),
+    historyRemovedAt: historyRemovals(data.historyRemovedAt),
     favEpCounts: sanitizeEpCounts(data.favEpCounts, favs),
     dirtyHistory: Object.fromEntries(Object.entries(data.dirtyHistory || {}).filter(([id, row]) => Number.isSafeInteger(Number(id)) && Number(id) > 0 && Number.isSafeInteger(row?.ep) && row.ep > 0 && Number.isFinite(row.at))),
   };
 }
 const selected = (list: number[], id: number, on: boolean) => on ? [id, ...list.filter(x => x !== id)] : list.filter(x => x !== id);
-const message = (error: unknown) => error instanceof Error ? error.message : "账号同步失败，请重试";
-function applyInteractions(data: AccountData, incoming?: AccountInteractions): AccountData {
+const message = (error: unknown) => error instanceof Error ? error.message : tr("账号同步失败，请重试");
+function applyInteractions(data: AccountData, incoming?: AccountInteractions, origin = ""): AccountData {
   if (!incoming) return data;
   const next = { ...data };
   for (const [local, remote] of [["likes", "like_video_ids"], ["favs", "favorite_video_ids"], ["follows", "follow_user_ids"], ["postLikes", "like_post_ids"], ["postFavs", "favorite_post_ids"]] as const) {
-    if (Array.isArray(incoming[remote])) next[local] = ids(incoming[remote]);
+    if (!Array.isArray(incoming[remote])) continue;
+    const values = ids(incoming[remote]);
+    if (local === "favs" || local === "postFavs") {
+      const field = local === "favs" ? "favoriteChanges" : "postFavoriteChanges";
+      const synced = syncedFavorites(values, next[field], origin);
+      next[local] = synced.ids;
+      next[field] = synced.changes;
+    } else next[local] = values;
   }
   if (Array.isArray(incoming.favorite_video_ids)) next.favEpCounts = sanitizeEpCounts(next.favEpCounts, next.favs);
   if (Array.isArray(incoming.like_video_episodes)) next.likeEpisodes = sanitize({ likeEpisodes: incoming.like_video_episodes }).likeEpisodes;
@@ -135,7 +149,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     const s = state.current!;
     if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
     if (s.awaitingTrust) throw new Error(PENDING_LINE);
-    if (!s.user || !s.origin) throw new Error("请先登录当前线路的账号");
+    if (!s.user || !s.origin) throw new Error(tr("请先登录当前线路的账号"));
     return { expectedUserId: s.user.id, expectedOrigin: s.origin };
   };
   const persist = (data: AccountData, silent = false) => {
@@ -150,7 +164,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     accounts.current[accountKey(aliases.current, s.key)] = data;
     let storageFailed = false;
     try { localStorage.setItem(ACCOUNT_KEY, JSON.stringify({ version: 1, accounts: accounts.current, aliases: aliases.current })); storageError.current = ""; }
-    catch { storageError.current = "本机账号缓存保存失败，请检查存储空间"; s.sync = { ...s.sync, error: storageError.current }; storageFailed = true; }
+    catch { storageError.current = tr("本机账号缓存保存失败，请检查存储空间"); s.sync = { ...s.sync, error: storageError.current }; storageFailed = true; }
     if (mounted.current && (!silent || storageFailed)) render();
   };
   const flushHistory = async () => {
@@ -184,7 +198,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     flushTimer.current = window.setTimeout(() => {
       flushTimer.current = undefined;
       if (canSync(generation)) void flushHistory().catch(error => {
-        if (canSync(generation)) { state.current!.sync = { ...state.current!.sync, error: `观看历史待同步：${message(error)}` }; render(); }
+        if (canSync(generation)) { state.current!.sync = { ...state.current!.sync, error: tr("观看历史待同步：{0}", message(error)) }; render(); }
       });
     }, 1500);
   }
@@ -193,14 +207,14 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     const seen = new Set<number>();
     for (let page = 1; page <= 200; page++) {
       const result = await api.accountHistory(auth, page, 100, deferExpiry);
-      if (!isCurrent(generation)) throw new Error("账号已切换");
+      if (!isCurrent(generation)) throw new Error(tr("账号已切换"));
       if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
       if (!result || !Array.isArray(result.items) || !result.pagination || result.pagination.page !== page
-        || !Number.isInteger(result.pagination.pages) || result.pagination.pages < 0 || result.pagination.pages > 200) throw new Error("账号历史返回格式异常");
+        || !Number.isInteger(result.pagination.pages) || result.pagination.pages < 0 || result.pagination.pages > 200) throw new Error(tr("账号历史返回格式异常"));
       for (const row of result.items) if (!seen.has(row.id)) { seen.add(row.id); rows.push(row); }
       if (page >= result.pagination.pages) return rows;
     }
-    throw new Error("账号历史分页过多，请稍后重试");
+    throw new Error(tr("账号历史分页过多，请稍后重试"));
   };
   const recoveryGeneration = useRef<number | null>(null);
   const syncRef = useRef<() => Promise<void>>(async () => {});
@@ -248,12 +262,12 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
       const errors: string[] = [];
       if (profile.status === "fulfilled") {
         const snapshot = profile.value;
-        if (snapshot?.origin !== auth.expectedOrigin || snapshot.user?.id !== auth.expectedUserId) errors.push("账号资料身份不匹配，请重新登录");
+        if (snapshot?.origin !== auth.expectedOrigin || snapshot.user?.id !== auth.expectedUserId) errors.push(tr("账号资料身份不匹配，请重新登录"));
         else if (mutation.current === startMutation && pending.current.size === 0) {
           state.current!.user = snapshot.user;
-          current = applyInteractions(current, snapshot.interactions);
+          current = applyInteractions(current, snapshot.interactions, auth.expectedOrigin);
           if (Array.isArray(snapshot.interactions?.favorite_video_ids)) favoritesKnown = true;
-          else if (!favoritesKnown) errors.push("账号未返回收藏数据，请重试");
+          else if (!favoritesKnown) errors.push(tr("账号未返回收藏数据，请重试"));
         } else if (pending.current.size === 0) needsResync.current = true;
       } else errors.push(message(profile.reason));
       if (remote.status === "fulfilled" && clearVersion.current === startClear) {
@@ -265,6 +279,8 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
           if (row.target_type !== "video" || !Number.isSafeInteger(row.video_id) || row.video_id <= 0) continue;
           const local = localRows.get(row.video_id);
           const timestamp = Date.parse(row.updated_at.replace(" ", "T")) || 0;
+          const removedAt = current.historyRemovedAt?.[row.video_id];
+          if (removedAt && timestamp <= removedAt) continue;
           const ep = Math.max(1, row.last_ep || 1);
           if (!local || (timestamp > local.at && !current.dirtyHistory[row.video_id] && !changed(local))) {
             merged.set(row.video_id, { id: row.video_id, ep, t: local?.ep === ep ? local.t : 0, dur: local?.ep === ep ? local.dur : 0, at: timestamp });
@@ -346,7 +362,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     // Logout clears the local session even when its token has expired. Retain
     // identity matching and generation guards without requiring a valid token.
     await api.logout(user ? { expectedUserId: user.id, expectedOrigin: origin } : undefined);
-    if (!isCurrent(version)) throw new Error("账号已切换");
+    if (!isCurrent(version)) throw new Error(tr("账号已切换"));
     setUser(null);
   }, [setUser]);
   const mutate = (key: string, request: (auth: AccountIdentity) => Promise<unknown>, update: (data: AccountData) => AccountData) => {
@@ -356,7 +372,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     mutation.current++;
     const run = (async () => {
       if (s.user) await request(identity());
-      if (!isCurrent(version)) throw new Error("账号已切换，原操作不会影响当前账号");
+      if (!isCurrent(version)) throw new Error(tr("账号已切换，原操作不会影响当前账号"));
       if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
       mutation.current++;
       persist(update(state.current!.data));
@@ -377,12 +393,14 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const setCollected = useCallback((kind: Kind, id: number, on: boolean, knownEpisodes?: number) => mutate(`collect:${kind}:${id}`,
     auth => kind === "video" ? api.collect(id, on, auth) : api.postCollect(id, on, auth),
     data => {
-      if (kind !== "video") return { ...data, postFavs: selected(data.postFavs, id, on) };
+      const field = kind === "video" ? "favoriteChanges" : "postFavoriteChanges";
+      const edits = state.current!.user ? { [field]: { ...data[field], [id]: { on, at: Date.now(), origin: state.current!.origin } } } : {};
+      if (kind !== "video") return { ...data, ...edits, postFavs: selected(data.postFavs, id, on) };
       const favs = selected(data.favs, id, on);
       const nextCounts = { ...(data.favEpCounts || {}) };
       if (!on) delete nextCounts[id];
       else if (knownEpisodes && Number.isSafeInteger(knownEpisodes) && knownEpisodes > 0) nextCounts[id] = knownEpisodes;
-      return { ...data, favs, favEpCounts: sanitizeEpCounts(nextCounts, favs) };
+      return { ...data, ...edits, favs, favEpCounts: sanitizeEpCounts(nextCounts, favs) };
     }), []);
   const setLiked = useCallback((kind: Kind, id: number, ep: number, on: boolean) => mutate(`like:${kind}:${id}:${ep}`,
     auth => kind === "video" ? api.like(id, ep, on, auth) : api.postLike(id, on, auth), data => {
@@ -392,7 +410,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
       return { ...data, likeEpisodes, likes: selected(data.likes, id, likeEpisodes.some(row => row.video_id === id)) };
     }), []);
   const setFollowing = useCallback((id: number, on: boolean) => {
-    if (!state.current!.user) return Promise.reject(new Error("请先登录"));
+    if (!state.current!.user) return Promise.reject(new Error(tr("请先登录")));
     return mutate(`follow:${id}`, auth => api.follow(id, on, auth), data => ({ ...data, follows: selected(data.follows, id, on) }));
   }, []);
   const currentGeneration = state.current.generation;
@@ -406,6 +424,8 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     const changed = previous && previous.ep !== nextEp;
     const row: WatchProgress = { id, ep: nextEp, t: time ?? (changed ? 0 : previous?.t ?? 0), dur: duration ?? (changed ? 0 : previous?.dur ?? 0), at: Date.now() };
     if (!validProgress(row)) return;
+    const removedAt = s.data.historyRemovedAt?.[id];
+    if (removedAt) row.at = Math.max(row.at, removedAt + 1);
     historyMutation.current++;
     let dirtyHistory = s.data.dirtyHistory;
     if (s.user && time !== undefined && time >= 3 && sentHistory.current.get(id) !== nextEp && dirtyHistory[id]?.ep !== nextEp) {
@@ -418,31 +438,77 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     persist({ ...s.data, history: [row, ...s.data.history.filter(item => item.id !== id)], dirtyHistory, localHistory: selected(s.data.localHistory, id, true), favEpCounts });
     if (s.user && Object.keys(dirtyHistory).length) scheduleUpload(currentGeneration);
   }, [currentGeneration, currentClearVersion]);
-  const clearHistory = useCallback(async () => {
+  const deleteHistory = useCallback(async (videoIds?: number[]) => {
+    const selectedIds = videoIds && new Set(videoIds.filter(id => Number.isSafeInteger(id) && id > 0));
+    if (selectedIds?.size === 0) return;
     const version = state.current!.generation;
-    if (clearing.current === version) return;
+    if (clearing.current === version) {
+      if (!selectedIds) return;
+      throw new Error(tr("另一项观看记录操作正在进行，请稍后重试"));
+    }
     clearing.current = version;
     historyMutation.current++; clearVersion.current++;
     render();
     window.clearTimeout(flushTimer.current); flushTimer.current = undefined;
-    try {
-      if (state.current!.user) {
-        if (upload.current?.generation === version) await upload.current.promise.catch(() => {});
-        if (!isCurrent(version)) throw new Error("账号已切换");
-        const auth = identity();
-        const rows = await readHistory(auth, version);
-        if (!isCurrent(version)) throw new Error("账号已切换");
-        const rowIds = rows.filter(row => row.target_type === "video").map(row => row.id);
-        // Empty IDs must never mean an implicit delete-all on the server.
-        for (let offset = 0; offset < rowIds.length; offset += 100) {
-          await api.accountHistoryDelete(auth, rowIds.slice(offset, offset + 100));
-          if (!isCurrent(version)) throw new Error("账号已切换");
-          if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
-        }
+    const data = state.current!.data;
+    const targetIds = selectedIds ?? new Set([...data.history.map(row => row.id), ...data.localHistory, ...Object.keys(data.dirtyHistory).map(Number)]);
+    const remoteTimes = new Map<number, number>();
+    const commitRemoved = (ids: number[]) => {
+      const current = state.current!.data;
+      const removed = new Set(ids);
+      const historyRemovedAt = { ...current.historyRemovedAt };
+      const now = Date.now();
+      for (const id of removed) {
+        sentHistory.current.delete(id);
+        if (state.current!.user) historyRemovedAt[id] = Math.max(now, historyRemovedAt[id] || 0, remoteTimes.get(id) || 0);
       }
-      if (isCurrent(version)) { historyMutation.current++; clearVersion.current++; sentHistory.current.clear(); persist({ ...state.current!.data, history: [], dirtyHistory: {}, localHistory: [] }); }
-    } finally { if (clearing.current === version) clearing.current = null; }
+      for (const row of current.history) {
+        if (removed.has(row.id) && state.current!.user) historyRemovedAt[row.id] = Math.max(historyRemovedAt[row.id], row.at);
+      }
+      historyMutation.current++; clearVersion.current++;
+      persist({ ...current, historyRemovedAt, history: current.history.filter(row => !removed.has(row.id)),
+        dirtyHistory: Object.fromEntries(Object.entries(current.dirtyHistory).filter(([id]) => !removed.has(+id))),
+        localHistory: current.localHistory.filter(id => !removed.has(id)) });
+    };
+    try {
+      if (!state.current!.user) { commitRemoved([...targetIds]); return; }
+      if (synchronizing.current?.generation === version) await synchronizing.current.promise.catch(() => {});
+      if (!isCurrent(version)) throw new Error(tr("账号已切换"));
+      if (upload.current?.generation === version) await upload.current.promise.catch(() => {});
+      if (!isCurrent(version)) throw new Error(tr("账号已切换"));
+      const auth = identity();
+      const rows = (await readHistory(auth, version)).filter(row => row.target_type === "video" && (!selectedIds || selectedIds.has(row.video_id)));
+      if (!isCurrent(version)) throw new Error(tr("账号已切换"));
+      if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
+      const remaining = new Map<number, number>();
+      for (const row of rows) {
+        targetIds.add(row.video_id);
+        remaining.set(row.video_id, (remaining.get(row.video_id) || 0) + 1);
+        const at = Date.parse(row.updated_at.replace(" ", "T")) || 0;
+        remoteTimes.set(row.video_id, Math.max(at, remoteTimes.get(row.video_id) || 0));
+      }
+      const localOnly = [...targetIds].filter(id => !remaining.has(id));
+      if (localOnly.length) commitRemoved(localOnly);
+      for (let offset = 0; offset < rows.length; offset += 100) {
+        const batch = rows.slice(offset, offset + 100);
+        await api.accountHistoryDelete(auth, batch.map(row => row.id));
+        if (!isCurrent(version)) throw new Error(tr("账号已切换"));
+        if (state.current!.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
+        const confirmed = [];
+        for (const row of batch) {
+          const left = remaining.get(row.video_id)! - 1;
+          remaining.set(row.video_id, left);
+          if (!left) confirmed.push(row.video_id);
+        }
+        if (confirmed.length) commitRemoved(confirmed);
+      }
+    } finally {
+      if (clearing.current === version) clearing.current = null;
+      if (isCurrent(version) && state.current!.user && Object.keys(state.current!.data.dirtyHistory).length) scheduleUpload(version);
+    }
   }, []);
+  const clearHistory = useCallback(() => deleteHistory(), [deleteHistory]);
+  const removeHistory = useCallback((ids: number[]) => deleteHistory(ids), [deleteHistory]);
   const seedFavoriteEpisodes = useCallback((entries: Record<number, number>) => {
     const cur = state.current!.data;
     const favSet = new Set(cur.favs);
@@ -484,10 +550,10 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     isFav: (id: number, kind: Kind = "video") => (kind === "video" ? s.data.favs : s.data.postFavs).includes(id),
     isLiked: (id: number, ep?: number, kind: Kind = "video") => kind === "post" ? s.data.postLikes.includes(id)
       : ep !== undefined && s.data.likeEpisodes ? s.data.likeEpisodes.some(row => row.video_id === id && row.ep === ep) : s.data.likes.includes(id),
-    setCollected, setLiked, setFollowing, addHistory, clearHistory,
+    setCollected, setLiked, setFollowing, addHistory, clearHistory, removeHistory,
     actionPending: (key: string) => pending.current.has(key),
     toggleLikeLocal: (id: number) => localToggle("likes", id),
     toggleFavLocal: (id: number) => localToggle("favs", id),
     toggleFollowLocal: (id: number) => localToggle("follows", id),
-  }), [rev, drawTick, setUser, restoreSession, generation, logout, retrySync, seedFavoriteEpisodes, ackFavoriteEpisodes, setCollected, setLiked, setFollowing, addHistory, clearHistory, localToggle]);
+  }), [rev, drawTick, setUser, restoreSession, generation, logout, retrySync, seedFavoriteEpisodes, ackFavoriteEpisodes, setCollected, setLiked, setFollowing, addHistory, clearHistory, removeHistory, localToggle]);
 }

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type PointerEvent as ReactPointerEvent, type RefObject, type SetStateAction } from "react";
 import type { PlaybackClock, VideoHandle } from "../playback";
 import type { Toast } from "../../shared/model/store";
-import { createHoldSpeed, getHoldPoint, getHoldZone, isInsideHoldTarget, shiftHoldSpeed, HOLD_DELAY_MS, type HoldRect, type HoldRotation, type HoldSpeed, type HoldZone } from "./mobileHold";
+import { createHoldSpeed, getHoldPoint, getHoldZone, shiftHoldSpeed, HOLD_DELAY_MS, type HoldRect, type HoldRotation, type HoldSpeed, type HoldZone } from "./mobileHold";
+import { resolveFullscreenEpisodeSwipe } from "./fullscreenEpisodeSwipe";
 import type { FeedPanel, PinchState } from "./useFeedViewport";
+import { tr } from "../../shared/i18n";
 
 type Args = {
   boxRef: RefObject<HTMLDivElement | null>;
@@ -32,24 +34,21 @@ type Args = {
   duration: number;
   playUrl: string;
   playKey: string;
-  openTagMenu: () => void;
   setPanel: Dispatch<SetStateAction<FeedPanel>>;
   setTagMenu: Dispatch<SetStateAction<boolean>>;
   toast: (msg: string, icon?: Toast["icon"], tag?: string) => void;
+  /** Episode changes in fullscreen wait for the incoming source's decoded size. */
+  episodeToast: (msg: string, immediate?: boolean) => void;
 };
 
 export function useFeedTouchGestures({
   boxRef, videoRef, pinchRef, playbackClock, isDesktop, active, controlsLocked, showHoldGuide,
   rotated, fs, clean, setClean, idle, setIdle, arm, wake, swipeEp, kind, curId, curEp, pickEpisode,
-  episodesLength, effectiveLength, go, duration, playUrl, playKey, openTagMenu, setPanel, setTagMenu, toast,
+  episodesLength, effectiveLength, go, duration, playUrl, playKey, setPanel, setTagMenu, toast, episodeToast,
 }: Args) {
   const [holdSpeed, setHoldSpeed] = useState(0);
   const [holdSlow, setHoldSlow] = useState(false);
-  const [speedLock, setSpeedLock] = useState(0);
-  const [lockArmed, setLockArmed] = useState(false);
   const holdRef = useRef(false);
-  const lockArmedRef = useRef(false);
-  const speedLockTargetRef = useRef<HTMLButtonElement>(null);
   const [scrub, setScrub] = useState<{ pct: number; target: number } | null>(null);
   const scrubTarget = useRef<number | null>(null);
   /* 进度条拖动 */
@@ -73,17 +72,7 @@ export function useFeedTouchGestures({
     pointersRef.current.clear();
   }, [playUrl, pinchRef]);
 
-  /* 锁定命中 = 手指真的移入顶部倍速胶囊（含旋转后的 DOM 矩形）；静止手指压着
-     新出现的提示不算移入（先走 12px 位移门槛）。 */
-  const isOverSpeedLock = (clientX: number, clientY: number) => {
-    const g = gesture.current, target = speedLockTargetRef.current;
-    if (!g || g.mode !== "hold" || g.zone !== "fast" || !target) return false;
-    const point = getHoldPoint(clientX, clientY, g.rect, g.rotation);
-    return Math.hypot(point.x - g.x, point.y - g.y) >= 12
-      && isInsideHoldTarget(clientX, clientY, target.getBoundingClientRect());
-  };
-
-  /* —— 长按加速（移入顶部胶囊锁定） / 横拖定位 / 单击净屏、双击暂停 —— */
+  /* —— 长按加速/减速 / 横拖定位 / 单击净屏、双击暂停 —— */
   const onDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (isDesktop || controlsLocked || !active || showHoldGuide) return;
     if (e.pointerType === "touch" && e.isPrimary && !pinchRef.current && !gesture.current && pointersRef.current.size > 0) {
@@ -114,8 +103,6 @@ export function useFeedTouchGestures({
       }
       gesture.current = null;
       if (holdRef.current) { holdRef.current = false; setHoldSpeed(0); setHoldSlow(false); }
-      lockArmedRef.current = false;
-      setLockArmed(false);
       setZoom((z) => ({ ...z, g: true }));
       return;
     }
@@ -134,14 +121,11 @@ export function useFeedTouchGestures({
         cur.mode = "hold";
         if (cur.zone === "menu") {
           holdRef.current = false;
-          openTagMenu();
-        } else {
-          holdRef.current = true;
-          if (cur.zone === "slow") setHoldSlow(true);
-          else { cur.speed = createHoldSpeed(cur.x); setHoldSpeed(cur.speed.rate); }
+          return;
         }
-        setLockArmed(false);
-        lockArmedRef.current = false;
+        holdRef.current = true;
+        if (cur.zone === "slow") setHoldSlow(true);
+        else { cur.speed = createHoldSpeed(cur.x); setHoldSpeed(cur.speed.rate); }
         try { navigator.vibrate?.(25); } catch { /* ignore */ }
       }, HOLD_DELAY_MS) as unknown as number,
     };
@@ -167,15 +151,10 @@ export function useFeedTouchGestures({
     if (!g || isDesktop) return;
     const dx = point.x - g.x, dy = point.y - g.y;
 
-    /* 长按中：加速区左右滑换挡；移入顶部胶囊才 armed，减速/不感兴趣区不锁 */
+    /* 长按中：加速区左右滑换挡；减速/中心区不换挡 */
     if (g.mode === "hold") {
       if (g.zone !== "fast") return;
       const step = g.speed && shiftHoldSpeed(g.speed, point.x); if (step) setHoldSpeed(step);
-      const armed = isOverSpeedLock(e.clientX, e.clientY);
-      if (armed !== lockArmedRef.current) {
-        lockArmedRef.current = armed;
-        setLockArmed(armed);
-      }
       return;
     }
 
@@ -212,14 +191,11 @@ export function useFeedTouchGestures({
       setZoom((z) => (z.s < 1.05 ? { s: 1, x: 0, y: 0, g: false } : { s: z.s, x: z.x, y: z.y, g: false }));
     }
     const g = gesture.current;
-    // 松手位置再验一次命中：armed 之后手指又移出胶囊的，不锁定。
-    const releasedOnLock = !cancelled && !!e && isOverSpeedLock(e.clientX, e.clientY);
     gesture.current = null;
     /* 长按状态必须无条件复位：切集 / 组件重建会把手势对象清掉，
        但 holdRef 若留在 true，下面的 touchmove 会一直 preventDefault，
        整个列表就再也滑不动（表现为「播放后不能上滑」）。 */
     if (holdRef.current) { holdRef.current = false; setHoldSpeed(0); setHoldSlow(false); }
-    if (lockArmedRef.current) { lockArmedRef.current = false; setLockArmed(false); }
     if (!g) return;
     if (g.timer) window.clearTimeout(g.timer);
 
@@ -227,12 +203,6 @@ export function useFeedTouchGestures({
       holdRef.current = false;
       setHoldSpeed(0);
       setHoldSlow(false);
-      if (releasedOnLock) {
-        setSpeedLock(g.speed?.rate || 2);
-        toast(`已锁定 ${g.speed?.rate || 2}x 倍速 · 点顶部标签解除`, "info");
-      }
-      lockArmedRef.current = false;
-      setLockArmed(false);
       return;
     }
     if (g.mode === "scrub") {
@@ -253,13 +223,28 @@ export function useFeedTouchGestures({
       const dy = point.y - g.startY;
       const dx2 = point.x - g.x;
       if (Math.abs(dy) > 56 && Math.abs(dy) > Math.abs(dx2)) {
-        const dir = dy < 0 ? 1 : -1;
         const ep = curEp;
         const total = episodesLength;
+        if (fs && kind === "video") {
+          const result = resolveFullscreenEpisodeSwipe(ep, total, dy);
+          if (result && "message" in result) {
+            /* Reuse the playback hint slot so repeated boundary swipes replace instead of stack. */
+            episodeToast(result.message, true);
+            return;
+          }
+          if (result) {
+            const want = result.target;
+            pickEpisode(want);
+            episodeToast(tr("第 {0}集{1}", want, total ? ` / ${total}` : ""));
+            try { navigator.vibrate?.(12); } catch { /* ignore */ }
+            return;
+          }
+        }
+        const dir = dy < 0 ? 1 : -1;
         const want = dir === 1 ? (total > 1 && ep < total ? ep + 1 : 0) : (ep > 1 ? ep - 1 : 0);
         if (swipeEp && kind === "video" && want) {
           pickEpisode(want);
-          toast(`第 ${want}集${total ? ` / ${total}` : ""}`, "info", "episode");
+          episodeToast(tr("第 {0}集{1}", want, total ? ` / ${total}` : ""));
           try { navigator.vibrate?.(12); } catch { /* ignore */ }
           return;
         }
@@ -280,7 +265,8 @@ export function useFeedTouchGestures({
         lastTapRef.current.idle = idle;
         setClean(!clean);
         if (!isDesktop && fs) setIdle(!idle);
-        if (!isDesktop && fs && idle) arm();
+        /* Re-arm the auto-hide timer whenever fullscreen controls become visible. */
+        if (!isDesktop && fs) arm();
         lastTapRef.current.timer = window.setTimeout(() => {
           lastTapRef.current.timer = null;
         }, 230) as unknown as number;
@@ -307,10 +293,9 @@ export function useFeedTouchGestures({
     lastTapRef.current.timer = null;
     gesture.current = null;
     holdRef.current = false;
-    lockArmedRef.current = false;
   }, [playKey]);
 
-  /* 长按倍速期间禁止原生滚动，否则上滑会被列表吃掉、锁不住倍速 */
+  /* 长按倍速期间禁止原生滚动，否则上滑会被列表吃掉、中断长按倍速 */
   useEffect(() => {
     if (isDesktop) return undefined;
     const el = boxRef.current;
@@ -377,10 +362,6 @@ export function useFeedTouchGestures({
     setZoom,
     holdSpeed,
     holdSlow,
-    speedLock,
-    setSpeedLock,
-    lockArmed,
-    speedLockTargetRef,
     scrub,
     barRef,
     barPct,

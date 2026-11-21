@@ -4,6 +4,7 @@ import { AUTH_EXPIRED_MESSAGE, captureAuthFailure, httpErrorStatus } from "./aut
 import type {
   AccountHistoryPage, AccountIdentity, AccountSnapshot, CommentPage, Detail, HotSearchVideo, Paged, PlayInfo, Post, PostCategory, RankItem, TagGroup, TopicCard, TopicDetail, User, UserProfile, VideoCard,
 } from "./types";
+import { tr } from "../i18n";
 
 /* ── 运行环境 ───────────────────────────────────────────── */
 
@@ -70,10 +71,10 @@ const notifyNet = (r: Parameters<NetObserver>[0]) => {
 };
 const failMessage = (msg: string, status?: string, command?: string) =>
   status === "401" ? (command === "api_login" || command === "api_register"
-    ? "登录验证未通过，请检查账号和密码后重试" : AUTH_EXPIRED_MESSAGE)
-  : status === "403" ? "服务器拒绝访问（HTTP 403），请确认当前账号是否有访问权限"
+    ? tr("登录验证未通过，请检查账号和密码后重试") : AUTH_EXPIRED_MESSAGE)
+  : status === "403" ? tr("服务器拒绝访问（HTTP 403），请确认当前账号是否有访问权限")
   : status
-    ? `服务器请求失败（HTTP ${status}），请稍后重试或在设置中切换线路`
+    ? tr("服务器请求失败（HTTP {0}），请稍后重试或在设置中切换线路", status)
     : msg.length > 140 ? `${msg.slice(0, 140)}…` : msg;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>, deferExpiry = false): Promise<T> {
@@ -84,7 +85,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>, deferExpiry 
     notifyNet({ ok: true, cmd });
     return r;
   } catch (e) {
-    const msg = typeof e === "string" ? e : "请求失败，请检查网络";
+    const msg = typeof e === "string" ? e : tr("请求失败，请检查网络");
     const status = httpErrorStatus(msg);
     const staleAuth = status === "401" && onUnauthorized?.() === false;
     const networkish = !status && NET_FAIL.test(msg);
@@ -109,10 +110,10 @@ async function call<T>(cmd: string, args?: Record<string, unknown>, deferExpiry 
         const staleRetryAuth = againStatus === "401" && onUnauthorized?.() === false;
         logLine(`[api] ${cmd} 重试仍失败 → ${again}`);
         tracePlayback("api.retry_failed", { cmd, err: again, status: againStatus ?? null });
-        throw new Error(staleRetryAuth ? "账号或线路已变化，请重试" : failMessage(again, againStatus, cmd));
+        throw new Error(staleRetryAuth ? tr("账号或线路已变化，请重试") : failMessage(again, againStatus, cmd));
       }
     }
-    throw new Error(staleAuth ? "账号或线路已变化，请重试" : failMessage(msg, status, cmd));
+    throw new Error(staleAuth ? tr("账号或线路已变化，请重试") : failMessage(msg, status, cmd));
   }
 }
 
@@ -341,8 +342,8 @@ export async function selfTest(): Promise<string> {
 
 export const fmt = (n: number | undefined) => {
   const v = Number(n) || 0;
-  if (v >= 100_000_000) return `${(v / 100_000_000).toFixed(1).replace(/\.0$/, "")}亿`;
-  if (v >= 10_000) return `${(v / 10_000).toFixed(1).replace(/\.0$/, "")}万`;
+  if (v >= 100_000_000) return tr("{0}亿", (v / 100_000_000).toFixed(1).replace(/\.0$/, ""));
+  if (v >= 10_000) return tr("{0}万", (v / 10_000).toFixed(1).replace(/\.0$/, ""));
   return String(v);
 };
 

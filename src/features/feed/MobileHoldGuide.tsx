@@ -3,6 +3,7 @@ import { getHoldMenuBounds } from "./mobileHold";
 import { Button } from "../../shared/ui/ios/controls";
 import { GuideFrame } from "../../shared/ui/ios/overlays";
 import "../../styles/mobile-hold-guide.css";
+import { tr } from "../../shared/i18n";
 
 type Props = {
   open: boolean;
@@ -13,7 +14,7 @@ type Props = {
 type Layout = { width: number; height: number; left: number; top: number; targetWidth: number; targetHeight: number };
 
 export default function MobileHoldGuide({ open, onClose, target, bottomInset }: Props) {
-  return <GuideFrame open={open} onClose={onClose} label="视频长按操作提示">
+  return <GuideFrame open={open} onClose={onClose} label={tr("视频长按操作提示")}>
     <GuideContent target={target} bottomInset={bottomInset} onClose={onClose} />
   </GuideFrame>;
 }
@@ -89,24 +90,20 @@ function GuideContent({ target, bottomInset, onClose }: Omit<Props, "open">) {
           width={bounds.size} height={bounds.size} fill="rgb(15 19 30 / .42)" stroke="white" strokeWidth="2" />
       </svg>
       <div className="mobile-hold-guide-heading">
-        <h2>长按，按你的位置操作</h2>
-        <p>按住约 0.4 秒，松开恢复原速度</p>
+        <h2>{tr("长按左右区域调整速度")}</h2>
+        <p>{tr("按住约 0.4 秒，松开恢复原速度")}</p>
       </div>
       <div className="mobile-hold-guide-zone is-fast" style={point(.76, compact ? .34 : .28)}>
-        <strong>2×</strong><span>右上 · 按住加速</span>
+        <strong>2×</strong><span>{tr("右上 · 按住加速")}</span>
       </div>
       <div className="mobile-hold-guide-zone is-slow" style={point(.24, compact ? .66 : .65)}>
-        <strong>0.5×</strong><span>左下 · 按住减速</span>
-      </div>
-      <div className="mobile-hold-guide-zone is-menu" data-hold-guide-menu style={{ ...point(.5, .5), width: bounds.size, height: bounds.size }}>
-        <span className="mobile-hold-guide-dot" aria-hidden="true" />
-        <strong>不感兴趣</strong><span>只在此处长按</span>
+        <strong>0.5×</strong><span>{tr("左下 · 按住减速")}</span>
       </div>
     </>}
     <div className="mobile-hold-guide-footer">
-      <p>长按加速 · 左右滑换挡 · 移入顶部标签锁定</p>
-      <p>双击暂停播放</p>
-      <Button className="mobile-hold-guide-done" onClick={onClose} data-autofocus>知道了</Button>
+      <p>{tr("长按左右区域加速 / 减速 · 左右滑换挡")}</p>
+      <p>{tr("双击暂停播放")}</p>
+      <Button className="mobile-hold-guide-done" onClick={onClose} data-autofocus>{tr("知道了")}</Button>
     </div>
   </div>;
 }
