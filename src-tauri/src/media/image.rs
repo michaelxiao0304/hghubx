@@ -74,10 +74,10 @@ fn image_kind(buf: &[u8]) -> Option<&'static str> {
 }
 
 /// 取封面：命中缓存直接返回；同地址的进行中请求共享下载和解密结果。
-pub async fn load_image(url: &str) -> ImageResult {
+pub async fn load_image(url: &str, prefer_webp: bool) -> ImageResult {
     let req_scope = crate::net::request_scope();
     let generation = IMG_GENERATION.load(Ordering::Acquire);
-    let cache_key = format!("{}:{}:{generation}:{url}", u8::from(req_scope.strict), req_scope.generation);
+    let cache_key = format!("{}:{}:{generation}:{prefer_webp}:{url}", u8::from(req_scope.strict), req_scope.generation);
     if let Some(hit) = IMG_CACHE.lock().unwrap().get(&cache_key).cloned() {
         let kind = image_kind(&hit).unwrap_or("image/jpeg");
         return Ok((kind.to_string(), hit));
@@ -94,24 +94,19 @@ pub async fn load_image(url: &str) -> ImageResult {
             request
         }
     };
-    loading.get_or_init(|| download_image(url, &cache_key, req_scope, generation)).await.clone()
+    loading.get_or_init(|| download_image(url, &cache_key, req_scope, generation, prefer_webp)).await.clone()
 }
 
-async fn download_image(url: &str, cache_key: &str, req_scope: crate::net::RequestScope, generation: u64) -> ImageResult {
+async fn download_image(url: &str, cache_key: &str, req_scope: crate::net::RequestScope, generation: u64, prefer_webp: bool) -> ImageResult {
     // 缓存检查与领取任务之间，另一请求可能已完成。
     if let Some(hit) = IMG_CACHE.lock().unwrap().get(cache_key).cloned() {
         let kind = image_kind(&hit).unwrap_or("image/jpeg");
         return Ok((kind.to_string(), hit));
     }
-    let (_, bytes) = fetch_bytes(url).await?;
-    let plain = if image_kind(&bytes).is_some() {
-        bytes
-    } else {
-        let dec = aes_cbc_decrypt(&bytes).ok_or_else(|| "封面解密失败".to_string())?;
-        strip_padding(dec)
-    };
-    let kind = image_kind(&plain).ok_or_else(|| "封面格式无效".to_string())?.to_string();
-    let arc = Arc::new(plain);
+    let webp = if prefer_webp { crate::cover_cdn::candidate(url, req_scope).await } else { None };
+    let (kind, arc) = crate::cover_cdn::load_with_fallback(url, webp, |source| async move {
+        decode_cover(fetch_bytes(&source).await?.1)
+    }).await?;
     let mut cache = IMG_CACHE.lock().unwrap();
     // 清缓存或切换配置代次后，旧下载可完成当前显示，但不再把结果写回新一代缓存。
     if IMG_GENERATION.load(Ordering::Acquire) == generation && crate::net::request_scope() == req_scope {
@@ -121,6 +116,17 @@ async fn download_image(url: &str, cache_key: &str, req_scope: crate::net::Reque
         cache.insert(cache_key.to_string(), arc.clone());
     }
     Ok((kind, arc))
+}
+
+pub(crate) fn decode_cover(bytes: Vec<u8>) -> ImageResult {
+    let plain = if image_kind(&bytes).is_some() {
+        bytes
+    } else {
+        let dec = aes_cbc_decrypt(&bytes).ok_or_else(|| "封面解密失败".to_string())?;
+        strip_padding(dec)
+    };
+    let kind = image_kind(&plain).ok_or_else(|| "封面格式无效".to_string())?.to_string();
+    Ok((kind, Arc::new(plain)))
 }
 
 pub(super) fn clear_cache() {
@@ -175,7 +181,7 @@ mod tests {
     async fn cover_decrypt_works() {
         let url = crate::env::var("TEST_COVER_URL")
             .expect("需要设置 HGHUBX_TEST_COVER_URL 为当前有效的封面地址");
-        match load_image(&url).await {
+        match load_image(&url, true).await {
             Ok((kind, bytes)) => {
                 println!("kind={kind} len={}", bytes.len());
                 assert!(kind.starts_with("image/"));

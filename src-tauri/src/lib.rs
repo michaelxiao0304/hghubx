@@ -1,6 +1,7 @@
 mod api;
 mod apple_proxy;
 mod cache;
+mod cover_cdn;
 mod env;
 #[cfg(target_os = "ios")]
 mod ios_layout;

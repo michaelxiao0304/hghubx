@@ -141,14 +141,26 @@ function ImageLoad({ url, alt, className, eager, raw, loadingIndicator }: {
   const [ok, setOk] = useState(false);
   const [err, setErr] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  /* 封面走本地解密代理，网络抖动会偶发失败：同地址重试两次再落到占位。
-     代理入口只读 `u`，多余查询参数会被忽略，用它做重试的缓存戳。 */
-  const retryUrl = !url || raw || attempt === 0 ? url : `${url}${url.includes("?") ? "&" : "?"}r=${attempt}`;
+  // Even a valid WebP response can fail in an older WebView's image decoder.
+  const retryUrl = raw || attempt === 0 ? url : `${url}&original=1&r=${attempt}`;
+  useEffect(() => {
+    if (!err || raw || !url) return;
+    const retry = () => { setAttempt(0); setErr(false); };
+    window.addEventListener("online", retry);
+    window.addEventListener("hg:proxy-changed", retry);
+    window.addEventListener("hg:line-changed", retry);
+    return () => {
+      window.removeEventListener("online", retry);
+      window.removeEventListener("hg:proxy-changed", retry);
+      window.removeEventListener("hg:line-changed", retry);
+    };
+  }, [err, raw, url]);
+  const loading = !!url && !ok && !err;
   return (
     <div className={`ios-image absolute inset-0 overflow-hidden ${className}`} data-ui="image-frame">
-      {!ok && !err && <div className="absolute inset-0 shimmer" />}
-      {loadingIndicator && !ok && <div className="absolute inset-0 grid place-items-center"><Loader label={tr("封面加载中")} /></div>}
-      {err && !loadingIndicator && <div className="ios-image-error" role="img" aria-label={alt || tr("封面暂不可用")}>HG</div>}
+      {loading && <div className="absolute inset-0 shimmer" />}
+      {loadingIndicator && loading && <div className="absolute inset-0 grid place-items-center"><Loader label={tr("封面加载中")} /></div>}
+      {(!url || err) && <div className="ios-image-error" role="img" aria-label={alt || tr("封面暂不可用")}>{loadingIndicator ? tr("封面暂不可用") : "HG"}</div>}
       {url && <Image src={retryUrl} alt={alt} loading={eager ? "eager" : "lazy"}
         onLoad={() => { setOk(true); setErr(false); }}
         onError={() => { if (!raw && attempt < 2) setAttempt(attempt + 1); else setErr(true); }}

@@ -16,20 +16,30 @@ try {
   await vite.listen();
   const origin = vite.resolvedUrls.local[0];
   browser = await chromium.launch({ headless: true, executablePath: process.env.BROWSER_EXECUTABLE || undefined });
-  page = await browser.newPage({ viewport: { width: 1100, height: 1200 } });
+  // Use the app's HTTP-based Windows media scheme so Chromium can intercept local image IPC on every host.
+  page = await browser.newPage({ viewport: { width: 1100, height: 1200 }, userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0" });
   const errors = [];
+  const cover = "https://covers.example/art.jpg?auth_key=fixture";
+  const coverRequests = [];
+  let coverOnline = false;
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/*", route => {
     const url = route.request().url();
+    const media = new URL(url);
+    if (media.origin === "http://hg.localhost" && media.pathname === "/img" && media.searchParams.get("u") === cover) {
+      coverRequests.push(media.searchParams.get("original"));
+      const body = coverOnline ? Buffer.from("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA", "base64") : Buffer.from("invalid image");
+      return route.fulfill({ contentType: "image/webp", body, headers: { "Cache-Control": "no-store" } });
+    }
     if (new URL(url).origin === new URL(origin).origin) return route.continue();
     report.external.push(url); return route.abort();
   });
-  const complete = (cmd, key, result) => page.evaluate(args => window.apiLoadingFixture.complete(...args), [cmd, key, result]);
+  const complete = (...args) => page.evaluate(args => window.apiLoadingFixture.complete(...args), args);
   const calls = () => page.evaluate(() => window.apiLoadingFixture.history);
   const visible = async locator => { await locator.waitFor({ state: "visible" }); };
 
   await page.goto(`${origin}tests/api-loading.html?page=home`);
-  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 1);
+  await page.waitForFunction(() => window.apiLoadingFixture?.history.length === 1);
   await complete("api_feed", "", "404");
   await visible(page.getByText("首页加载失败", { exact: true }));
   await visible(page.getByText(/服务器请求失败（HTTP 404）/));
@@ -43,13 +53,22 @@ try {
   report.passed.push("Home: 404 ends loading, readable error, explicit retry, empty result");
 
   await page.goto(`${origin}tests/api-loading.html`);
-  await page.waitForFunction(() => window.apiLoadingFixture.ready);
+  await page.waitForFunction(() => window.apiLoadingFixture?.ready);
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal((await calls()).length, 0, "Hidden categories must not prefetch");
   await page.evaluate(() => window.apiLoadingFixture.setActive(true));
   await page.waitForFunction(() => window.apiLoadingFixture.history.length === 4);
-  await complete("api_category", "ai-duanju", "item");
+  await complete("api_category", "ai-duanju", "item", cover);
   await visible(page.getByText("已加载ai-duanju", { exact: true }));
+  const image = page.locator('img[src*="covers.example"]');
+  await visible(page.locator('[data-ui="image-frame"]').filter({ has: image }).getByRole("img", { name: "封面暂不可用" }));
+  assert.deepEqual(coverRequests, [null, "1", "1"]);
+  coverOnline = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await page.waitForFunction(() => document.querySelector('img[src*="covers.example"]')?.naturalWidth === 1);
+  assert.equal(await image.evaluate(img => img.naturalHeight), 1);
+  assert.deepEqual(coverRequests, [null, "1", "1", null]);
+  report.passed.push("Category: a failed cover retries the original, stops loading and displays a decoded WebP after reconnect");
   await visible(page.getByRole("region", { name: "AI成人漫剧", exact: true }).getByText("加载中…", { exact: true }));
   await complete("api_original_videos", "all", "empty");
   await visible(page.getByRole("region", { name: "原创", exact: true }).getByText("暂无内容", { exact: true }));
