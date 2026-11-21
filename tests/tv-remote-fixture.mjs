@@ -43,7 +43,7 @@ export function installTvFixture({ accepted = false, legacy, contentPreferences,
       if (command === "app_boot") return { base: fixture.base, user: null, logged_in: false, local_mode: true, pending_migration_identity: null };
       if (command === "tv_migration_complete") { if (fixture.failAck) throw new Error("fixture acknowledgement interrupted"); return null; }
       if (command === "line_state") return { base: fixture.base, default: base, fixed: [{ name: "测试线路", url: base }] };
-      if (command === "line_health") return { base: fixture.base, ok: true, ms: 1, status: 200 };
+      if (command === "line_health") return { base: fixture.base, ok: true, sessionBound: false, ms: 1, status: 200 };
       if (command === "proxy_state") return { mode: "off", url: "", effective: null, system_proxy: false, env_proxy: false };
       if (command === "proxy_set") return { mode: args.mode, url: "", effective: null, system_proxy: false, env_proxy: false };
       if (command === "cache_clear") return { webCache: true, platform: "android" };

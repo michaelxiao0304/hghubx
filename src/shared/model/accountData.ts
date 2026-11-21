@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api/api";
+import { api, TransientRequestError } from "../api/api";
 import type { AccountHistoryItem, AccountIdentity, AccountInteractions, User } from "../api/types";
 import { AUTH_EXPIRED_MESSAGE, captureAuthFailure, observeAuthFailures } from "../api/authFailure";
 import { accountKey, mergeRebasedAccounts } from "../storage/accountRebase";
@@ -117,6 +117,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   const needsResync = useRef(false);
   const synchronizing = useRef<{ generation: number; promise: Promise<void> } | null>(null);
   const upload = useRef<{ generation: number; promise: Promise<void> } | null>(null);
+  const uploadsAwaitingAuth = useRef<number | null>(null);
   const sentHistory = useRef(new Map<number, number>());
   const clearing = useRef<number | null>(null);
   const flushTimer = useRef<number | undefined>(undefined);
@@ -167,14 +168,16 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     catch { storageError.current = tr("本机账号缓存保存失败，请检查存储空间"); s.sync = { ...s.sync, error: storageError.current }; storageFailed = true; }
     if (mounted.current && (!silent || storageFailed)) render();
   };
+  const canUpload = (generation: number) => canSync(generation)
+    && clearing.current !== generation && uploadsAwaitingAuth.current !== generation;
   const flushHistory = async () => {
     const generation = state.current!.generation;
-    if (!state.current!.user || !canSync(generation) || clearing.current === generation) return;
+    if (!state.current!.user || !canUpload(generation)) return;
     if (upload.current?.generation === generation) return upload.current.promise;
     const auth = identity();
     const run = (async () => {
       for (const [key, row] of Object.entries(state.current!.data.dirtyHistory)) {
-        if (!canSync(generation) || clearing.current === generation) return;
+        if (!canUpload(generation)) return;
         const id = Number(key);
         await api.accountHistoryRecord(auth, id, row.ep);
         if (!canSync(generation)) return;
@@ -194,7 +197,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     } finally { if (upload.current?.promise === run) upload.current = null; }
   };
   function scheduleUpload(generation: number) {
-    if (!canSync(generation) || flushTimer.current || clearing.current === generation) return;
+    if (!canUpload(generation) || flushTimer.current) return;
     flushTimer.current = window.setTimeout(() => {
       flushTimer.current = undefined;
       if (canSync(generation)) void flushHistory().catch(error => {
@@ -216,7 +219,6 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     }
     throw new Error(tr("账号历史分页过多，请稍后重试"));
   };
-  const recoveryGeneration = useRef<number | null>(null);
   const syncRef = useRef<() => Promise<void>>(async () => {});
   const syncAccount = useCallback(async () => {
     const s = state.current!;
@@ -232,7 +234,9 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     const startHistory = new Map(s.data.history.map(row => [row.id, row]));
     const run = (async () => {
       // Only replay observed playback, never silently upload the guest's library.
-      const credential = recoveryGeneration.current === generation ? null : credentialFor(auth.expectedUserId);
+      const credential = credentialFor(auth.expectedUserId);
+      // Let the account reads verify the session before a queued progress write can return 401.
+      if (credential) uploadsAwaitingAuth.current = generation;
       const expire = captureAuthFailure("api_me", { ...auth });
       const load = (deferExpiry: boolean) => Promise.allSettled([
         api.me(auth, deferExpiry),
@@ -243,16 +247,21 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
       if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
       if (credential && [profile, remote].some(result =>
         result.status === "rejected" && message(result.reason) === AUTH_EXPIRED_MESSAGE)) {
-        recoveryGeneration.current = generation;
         try {
           const snapshot = await api.login(credential.username, credential.password, { ...auth, credentialOrigin: credential.origin });
           if (!canSync(generation)) return;
           if (snapshot.origin !== auth.expectedOrigin || snapshot.user?.id !== auth.expectedUserId) throw new Error("登录身份已变化");
-        } catch {
+        } catch (error) {
           if (!isCurrent(generation)) return;
+          if (error instanceof TransientRequestError && !s.authExpired) {
+            s.sync = { ...s.sync, busy: false, error: tr("账号同步暂时中断，登录信息已保留。恢复连接后可重试。") };
+            render();
+            throw error;
+          }
           expire?.();
           throw new Error(AUTH_EXPIRED_MESSAGE);
         }
+        uploadsAwaitingAuth.current = null;
         [profile, remote] = await load(false);
         if (!isCurrent(generation)) return;
         if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
@@ -263,12 +272,18 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
       if (profile.status === "fulfilled") {
         const snapshot = profile.value;
         if (snapshot?.origin !== auth.expectedOrigin || snapshot.user?.id !== auth.expectedUserId) errors.push(tr("账号资料身份不匹配，请重新登录"));
-        else if (mutation.current === startMutation && pending.current.size === 0) {
-          state.current!.user = snapshot.user;
-          current = applyInteractions(current, snapshot.interactions, auth.expectedOrigin);
-          if (Array.isArray(snapshot.interactions?.favorite_video_ids)) favoritesKnown = true;
-          else if (!favoritesKnown) errors.push(tr("账号未返回收藏数据，请重试"));
-        } else if (pending.current.size === 0) needsResync.current = true;
+        else {
+          if (uploadsAwaitingAuth.current === generation) {
+            uploadsAwaitingAuth.current = null;
+            if (Object.keys(current.dirtyHistory).length) scheduleUpload(generation);
+          }
+          if (mutation.current === startMutation && pending.current.size === 0) {
+            state.current!.user = snapshot.user;
+            current = applyInteractions(current, snapshot.interactions, auth.expectedOrigin);
+            if (Array.isArray(snapshot.interactions?.favorite_video_ids)) favoritesKnown = true;
+            else if (!favoritesKnown) errors.push(tr("账号未返回收藏数据，请重试"));
+          } else if (pending.current.size === 0) needsResync.current = true;
+        }
       } else errors.push(message(profile.reason));
       if (remote.status === "fulfilled" && clearVersion.current === startClear) {
         const localRows = new Map(current.history.map(row => [row.id, row]));
@@ -537,9 +552,15 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   useEffect(() => {
     mounted.current = true;
     const refresh = () => { if (document.visibilityState !== "hidden") void syncRef.current().catch(() => {}); };
-    window.addEventListener("focus", refresh); window.addEventListener("online", refresh); document.addEventListener("visibilitychange", refresh);
+    const onReconnect = () => {
+      const active = synchronizing.current;
+      if (!active) { refresh(); return; }
+      // An online event can precede the timeout of a request sent on the old network.
+      void active.promise.catch(() => { if (canSync(active.generation)) refresh(); });
+    };
+    window.addEventListener("focus", refresh); window.addEventListener("online", onReconnect); document.addEventListener("visibilitychange", refresh);
     return () => { mounted.current = false; window.clearTimeout(flushTimer.current); window.clearTimeout(syncTimer.current);
-      window.removeEventListener("focus", refresh); window.removeEventListener("online", refresh); document.removeEventListener("visibilitychange", refresh); };
+      window.removeEventListener("focus", refresh); window.removeEventListener("online", onReconnect); document.removeEventListener("visibilitychange", refresh); };
   }, []);
   const s = state.current;
   const rev = snapshotRevision.current;

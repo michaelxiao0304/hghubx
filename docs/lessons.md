@@ -5,6 +5,7 @@
 
 | 日期 | 主题 | 症状 | 根因 | 规则 | 回归测试或来源 |
 | --- | --- | --- | --- | --- | --- |
+| 2026-11-22 | 网络重连与账号恢复 | 切换网络后，可用的已登录镜像被换走，恢复登录时超时也弹出重新登录提示 | 上线即按速度重新选站，静默重登把连接失败当成凭据失效 | 先检查当前会话绑定的线路。恢复遇到暂时故障时保留凭据和待传进度，下次联网再同步 | `scripts/test-line-selection.mjs`、`scripts/test-account-sync-empty-state.mjs` |
 | 2026-11-21 | 批量移除与可信切线 | 已移除的收藏和历史在切线后重新出现 | 合并旧账号缓存时只取并集，旧镜像也可返回已删除项 | 在账号桶记录已确认的删除，合并和同步时校验删除记录，保留未选中视频的集数与秒数 | `scripts/test-storage-migration.mjs`、`src/shared/storage/libraryChanges.ts` |
 | 2026-11-04 | 系统代理 | 浏览器能打开站点，HGhubX 一直直连失败；只有 TUN 模式看起来正常 | `reqwest` 使用 `default-features = false`，漏了 `system-proxy`，应用不读 Windows/macOS 固定代理 | 显式保留 `system-proxy` feature；代理模式/地址变化要能重建客户端；不要用“浏览器能开”代替应用层验证 | `1260a70`；`src-tauri/Cargo.toml` 的 reqwest feature；`src-tauri/src/net/tests.rs` 的 `ProxyRoute`/`client_key` 测试 |
 | 2026-11-09 | Android 自定义协议 | 接口正常，m3u8 一加载就 `manifestLoadError`/networkError | 部分 Android WebView 拦截 `http://hg.localhost` 时不给 `Origin`，严格模式把缺失 Origin 当成外部来源 | 进程内媒体地址可放行缺失/空/`"null"` Origin，但必须同时校验 Host、capability 和 `/img`、`/hls`、`/seg` 白名单；不能放宽业务 origin | `30cde3d`；`src-tauri/src/lib.rs` 的 `origin_ok`；Android 实机回归待核实 |

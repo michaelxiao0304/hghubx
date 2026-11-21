@@ -54,7 +54,8 @@ export const playlist = (url: string) => `${LOCAL}/hls?u=${encodeURIComponent(ur
 export const logLine = (msg: string) => invoke("debug_log", { msg }).catch(() => {});
 
 /** 网络类失败的样子：没有 HTTP 状态码，纯链路层（DNS / 连接 / 超时 / TLS） */
-const NET_FAIL = /dns|timed? ?out|timeout|connection|refused|reset|unreachable|broken pipe|tls|ssl|handshake|证书|网络|连接/i;
+const NET_FAIL = /dns|timed? ?out|timeout|connect|refused|reset|unreachable|broken pipe|tls|ssl|handshake|error sending request|超时|证书|网络|连接/i;
+export class TransientRequestError extends Error {}
 /** 只读命令：链路抖动时可以安全重试一次；写操作绝不重试（避免重复提交） */
 const READ_ONLY = new Set([
   "api_me", "api_feed", "api_original_videos", "api_category", "api_rank", "api_search",
@@ -76,6 +77,13 @@ const failMessage = (msg: string, status?: string, command?: string) =>
   : status
     ? tr("服务器请求失败（HTTP {0}），请稍后重试或在设置中切换线路", status)
     : msg.length > 140 ? `${msg.slice(0, 140)}…` : msg;
+
+function requestError(command: string, msg: string, status: string | undefined, staleAuth: boolean) {
+  if (staleAuth) return new Error(tr("账号或线路已变化，请重试"));
+  const description = failMessage(msg, status, command);
+  const transient = status ? /^(408|425|429|5\d\d)$/.test(status) : NET_FAIL.test(msg);
+  return transient ? new TransientRequestError(description) : new Error(description);
+}
 
 async function call<T>(cmd: string, args?: Record<string, unknown>, deferExpiry = false): Promise<T> {
   const onUnauthorized = deferExpiry ? undefined : captureAuthFailure(cmd, args);
@@ -110,10 +118,10 @@ async function call<T>(cmd: string, args?: Record<string, unknown>, deferExpiry 
         const staleRetryAuth = againStatus === "401" && onUnauthorized?.() === false;
         logLine(`[api] ${cmd} 重试仍失败 → ${again}`);
         tracePlayback("api.retry_failed", { cmd, err: again, status: againStatus ?? null });
-        throw new Error(staleRetryAuth ? tr("账号或线路已变化，请重试") : failMessage(again, againStatus, cmd));
+        throw requestError(cmd, again, againStatus, staleRetryAuth);
       }
     }
-    throw new Error(staleAuth ? tr("账号或线路已变化，请重试") : failMessage(msg, status, cmd));
+    throw requestError(cmd, msg, status, staleAuth);
   }
 }
 
@@ -210,7 +218,7 @@ export const api = {
   /* 当前是镜像时敲一次主站，通了就切回（不清会话） */
   lineTryMain: () => call<LineTryMain>("line_try_main"),
   /* 线路体检：探一次 /api/videos，和自动选线同一判据 */
-  lineHealth: () => call<LineHealth>("line_health"),
+  lineHealth: (refreshClient = false) => call<LineHealth>("line_health", { refreshClient }),
 
   /* 应用内代理：只影响本应用的上游网络请求。 */
   proxyState: () => call<ProxyState>("proxy_state"),
@@ -244,7 +252,7 @@ export type LineState = { base: string; default: string; fixed: LineItem[]; cust
 export type LineApply = { base: string; custom: boolean };
 export type LineMirrors = { source: string; script?: string; items: LineItem[]; recommended_source?: string; recommended: LineItem[] };
 export type LineProbe = { url: string; ok: boolean; status?: number; ms: number; error?: string };
-export type LineHealth = { base: string; ok: boolean; ms: number; status: number | null };
+export type LineHealth = { sessionBound: boolean; base: string; ok: boolean; ms: number; status: number | null };
 
 export type ProxyMode = "system" | "custom" | "off";
 export type ProxyState = {

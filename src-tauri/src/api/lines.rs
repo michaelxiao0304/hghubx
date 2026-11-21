@@ -111,11 +111,12 @@ pub async fn line_probe(urls: Vec<String>) -> Result<Value, String> {
 /// 自动选线：探测主站与可信发布页镜像，全部失败时保持当前线路。
 ///
 /// 切换两端都可信（固定线路或本进程发布页确认的镜像）时保留会话并 rebase origin；
-/// 镜像等待验证时保留独立会话；跨自定义站点时清空。
+/// 镜像等待验证时保留独立会话。已登录的自定义站点只能由用户手动切出。
 #[tauri::command]
 pub async fn line_auto(state: State<'_, Api>) -> Result<Value, String> {
     let selection = begin_line_selection()?;
     crate::net::refresh_client();
+    let revision = state.session.revision();
     let pick = crate::lines::auto_pick().await;
     let chosen = pick
         .get("base")
@@ -125,7 +126,10 @@ pub async fn line_auto(state: State<'_, Api>) -> Result<Value, String> {
     let mut switched = false;
     let generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
     let previous = base();
-    if *generation == selection
+    let bound_custom = crate::net::is_custom_line()
+        && state.session.stored_origin().as_deref() == Some(previous.as_str());
+    let cancelled = *generation != selection || state.session.revision() != revision || bound_custom;
+    if !cancelled
         && pick.get("reason").and_then(Value::as_str) != Some("all-down")
         && !chosen.is_empty() && chosen != previous {
         switched = apply_line(&state, &chosen, false)? != previous;
@@ -134,12 +138,12 @@ pub async fn line_auto(state: State<'_, Api>) -> Result<Value, String> {
         "previous": previous,
         "base": crate::net::base(),
         "switched": switched,
-        "cancelled": *generation != selection,
+        "cancelled": cancelled,
         "pick": pick,
     }))
 }
 
-/// 当前走的是镜像时，敲一次主站：通了就切回（可信会话保留并 rebase 到主站）。
+/// 当前未绑定会话时，主站恢复可用即可自动切回。
 ///
 /// 和 [`line_auto`] 的分工：[`line_auto`] 是「整体比一次」，要抓发布页；
 /// 这个只问一句「主站现在通不通」，代价一个请求，可以频繁调用。
@@ -151,7 +155,9 @@ pub async fn line_try_main(state: State<'_, Api>) -> Result<Value, String> {
     let mut switched = false;
     let generation = LINE_SELECTION.lock().map_err(|_| "线路选择锁失败")?;
     let previous = base();
-    if *generation == selection && probe.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+    let cancelled = *generation != selection
+        || state.session.stored_origin().as_deref() == Some(previous.as_str());
+    if !cancelled && probe.get("ok").and_then(Value::as_bool).unwrap_or(false) {
         let chosen = probe.get("base").and_then(Value::as_str).unwrap_or_default();
         if !chosen.is_empty() && chosen != previous {
             switched = apply_line(&state, chosen, false)? != previous;
@@ -162,12 +168,18 @@ pub async fn line_try_main(state: State<'_, Api>) -> Result<Value, String> {
         "base": crate::net::base(),
         "switched": switched,
         "probe": probe,
-        "cancelled": *generation != selection,
+        "cancelled": cancelled,
     }))
 }
 
 /// 线路体检：探一次 `/api/videos`，和自动选线用同一个判据。
 #[tauri::command]
-pub async fn line_health() -> Result<Value, String> {
-    Ok(crate::lines::health().await)
+pub async fn line_health(state: State<'_, Api>, refresh_client: Option<bool>) -> Result<Value, String> {
+    if refresh_client.unwrap_or(false) {
+        crate::net::refresh_client();
+    }
+    let mut health = crate::lines::health().await;
+    let origin = state.session.stored_origin();
+    health["sessionBound"] = json!(origin.is_some() && origin.as_deref() == health["base"].as_str());
+    Ok(health)
 }

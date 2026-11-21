@@ -1,6 +1,7 @@
 const en: Record<string, string> = {
   "获取播放地址超时，请检查网络或切换线路后重试": "Timed out getting the video URL. Check your connection or switch servers and try again.",
   "登录信息已保留，正在等待验证线路。恢复连接后会自动同步。": "Your sign-in is saved. Sync will resume once the server can be verified.",
+  "账号同步暂时中断，登录信息已保留。恢复连接后可重试。": "Account sync was interrupted. Your sign-in is saved. You can retry when the connection is back.",
   "关闭播放错误提示": "Dismiss playback error",
   "关闭登录失效提示": "Dismiss session notice",
   "加载较慢，正在等待视频数据…": "Loading slowly. Waiting for video data…",

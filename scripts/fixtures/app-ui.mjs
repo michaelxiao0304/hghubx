@@ -40,6 +40,7 @@ export function installFixture({ theme, titles, accountData = false }) {
     async invoke(command, args = {}) {
       if (command === "plugin:event|listen") return args.handler;
       if (command === "app_boot") return { user: null, logged_in: false, strict_security: true, base: "https://fixture.invalid" };
+      if (command === "line_health") return { base: "https://fixture.invalid", ok: true, sessionBound: false, ms: 1, status: 200 };
       if (command === "playback_log_status") return { enabled: false, path: null, error: null };
       if (command === "line_auto") return { base: "https://fixture.invalid", previous: "https://fixture.invalid", switched: false, pick: { tier: "main", ms: 1, reason: "fixture", candidates: [] } };
       if (command === "api_feed") return paged([]);
