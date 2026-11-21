@@ -23,7 +23,7 @@ try {
   }
   browser = await chromium.launch({ headless: true, executablePath });
 
-  const openProfile = async ({ favoriteIds = [], delaySync = false, rejectFirstSync = false, rejectHistory = false, omitFavorites = false, rejectWith401 = false, loginFirst = false, credentialPassword = "fixture-pass", firstEpisodeCount, holdFirstCollect = false } = {}) => {
+  const openProfile = async ({ favoriteIds = [], delaySync = false, rejectFirstSync = false, rejectHistory = false, omitFavorites = false, rejectWith401 = false, loginFirst = false, recoveryTimeout = false, credentialPassword = "fixture-pass", firstEpisodeCount, holdFirstCollect = false } = {}) => {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
     await context.addInitScript(installFixture, { theme: "light", titles: ["城市与晚风", "重逢在夏日以后", "星河旅人"] });
     await context.addInitScript(options => {
@@ -39,6 +39,14 @@ try {
       window.__ALLOW_SYNC_SUCCESS__ = !(options.rejectFirstSync || options.rejectWith401);
       window.__API_ME_CALLS__ = 0;
       window.__API_LOGIN_CALLS__ = 0;
+      if (options.recoveryTimeout) {
+        const key = JSON.stringify(["https://fixture.invalid", user.id]);
+        const progress = { id: 2, ep: 3, t: 55, dur: 180, at: 123 };
+        localStorage.setItem("hghubx_accounts_v1", JSON.stringify({ version: 1, accounts: {
+          [key]: { history: [progress], localHistory: [2], dirtyHistory: { 2: { ep: 3, at: 123 } } },
+        } }));
+        window.__PROGRESS_UPLOADS__ = [];
+      }
       window.__COLLECT_CALLS__ = [];
       window.__FAVORITE_EPISODE_COUNT__ = options.firstEpisodeCount;
       let signedIn = !options.loginFirst;
@@ -75,6 +83,7 @@ try {
           if (args.expectedUserId !== activeUser.id || args.expectedOrigin !== "https://fixture.invalid"
             || args.credentialOrigin !== "https://fixture.invalid") throw new Error("自动登录必须绑定账号与线路");
           window.__API_LOGIN_CALLS__ += 1;
+          if (options.recoveryTimeout && window.__API_LOGIN_CALLS__ === 1) throw "connection timed out";
           if (args.password === "fixture-pass") {
             window.__ALLOW_SYNC_SUCCESS__ = true;
             return { user: activeUser, origin: "https://fixture.invalid" };
@@ -91,6 +100,11 @@ try {
           }
           return { ok: true };
         }
+        if (command === "api_account_history_record" && options.recoveryTimeout) {
+          window.__PROGRESS_UPLOADS__.push([args.videoId, args.ep, window.__ALLOW_SYNC_SUCCESS__]);
+          if (!window.__ALLOW_SYNC_SUCCESS__) throw "401";
+          return { ok: true };
+        }
         if (command === "api_account_history") {
           await window.__ACCOUNT_SYNC_GATE__;
           if (options.rejectHistory) throw "模拟历史读取失败";
@@ -99,7 +113,7 @@ try {
         }
         return original(command, args);
       };
-    }, { favoriteIds, delaySync, rejectFirstSync, rejectHistory, omitFavorites, rejectWith401, loginFirst, credentialPassword, firstEpisodeCount, holdFirstCollect });
+    }, { favoriteIds, delaySync, rejectFirstSync, rejectHistory, omitFavorites, rejectWith401, loginFirst, recoveryTimeout, credentialPassword, firstEpisodeCount, holdFirstCollect });
     const page = await context.newPage();
     page.on("pageerror", error => report.errors.push(error.message));
     await page.route("**/*", route => {
@@ -196,6 +210,30 @@ try {
     assert.equal(await page.getByRole("alert").count(), 0,
       "A successful silent re-login must not surface a sync error");
     report.checks.push("account 401 triggers one silent re-login and the retried sync confirms favorites");
+    await context.close();
+  }
+
+  {
+    const { context, page } = await openProfile({ rejectWith401: true, loginFirst: true, recoveryTimeout: true, favoriteIds: [1] });
+    const retry = page.getByRole("button", { name: "重试同步", exact: true });
+    await page.getByRole("alert").first().waitFor();
+    assert.equal(await page.getByRole("complementary", { name: "登录状态提示" }).count(), 0,
+      "A timeout during session recovery must not expire the local account");
+    await retry.waitFor();
+    await page.getByText("账号同步暂时中断，登录信息已保留。恢复连接后可重试。", { exact: true }).first().waitFor();
+    assert.equal(await page.evaluate(() => window.__API_LOGIN_CALLS__), 1);
+    assert.deepEqual(await page.evaluate(() => window.__PROGRESS_UPLOADS__), []);
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.getByRole("button", { name: /城市与晚风/ }).first().waitFor();
+    assert.equal(await page.evaluate(() => window.__API_LOGIN_CALLS__), 2, "One retry on reconnect restores the session");
+    await page.waitForFunction(() => window.__PROGRESS_UPLOADS__.length > 0);
+    assert.deepEqual(await page.evaluate(() => window.__PROGRESS_UPLOADS__), [[2, 3, true]]);
+    const library = await page.evaluate(() => JSON.parse(localStorage.getItem("hghubx_accounts_v1")).accounts[JSON.stringify(["https://fixture.invalid", 9])]);
+    assert.deepEqual(library.history, [{ id: 2, ep: 3, t: 55, dur: 180, at: 123 }]);
+    assert.deepEqual(library.dirtyHistory, {});
+    assert.deepEqual(library.favs, [1]);
+    assert.equal(await page.evaluate(() => Object.values(localStorage).some(v => v.includes("fixture-pass"))), false);
+    report.checks.push("a network timeout during session recovery keeps the account and resumes sync after reconnect");
     await context.close();
   }
 

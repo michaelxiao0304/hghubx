@@ -133,11 +133,18 @@ async function check(reason: string): Promise<void> {
   }
   checking = true;
   try {
-    const health = await api.lineHealth();
+    const reconnect = reason === "online" || reason === "boot";
+    const health = await api.lineHealth(reconnect);
+    if (!autoLineEnabled()) return;
+    const onMain = hostOf(health.base) === "huangguoai.com";
+    if (reconnect && !health.sessionBound && !(onMain && health.ok)) {
+      await pickLine(reason);
+      return;
+    }
     if (health.ok) {
       downStreak = 0;
       step = Math.min(step + 1, HEALTH_STEPS.length - 1);
-      if (hostOf(health.base) !== "huangguoai.com") await tryMain(reason);
+      if (!health.sessionBound && !onMain) await tryMain(reason);
       schedule(HEALTH_STEPS[step]);
       return;
     }
@@ -170,7 +177,7 @@ function attach() {
     failStreak = 0;
     void check("api-fail");
   });
-  window.addEventListener("online", () => { step = 0; void pickLine("online"); });
+  window.addEventListener("online", () => { step = 0; downStreak = 0; void check("online"); });
   window.addEventListener("offline", () => schedule(30_000));
   window.addEventListener("hg:proxy-changed", () => {
     // Backend invalidates outstanding selections on save. Keep the selected
@@ -193,5 +200,5 @@ export function initAutoLine(): void {
   started = true;
   if (!autoLineEnabled()) return;
   attach();
-  void pickLine("boot");
+  void check("boot");
 }

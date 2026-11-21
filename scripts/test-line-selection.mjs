@@ -27,7 +27,7 @@ try {
   }
   browser = await chromium.launch({ headless: true, executablePath });
 
-  async function open(seed = {}, mobile = false) {
+  async function open(seed = {}, mobile = false, startOnMirror = false) {
     const context = await browser.newContext({
       viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 860 },
       ...(mobile ? { userAgent: "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36" } : {}),
@@ -39,13 +39,13 @@ try {
       report.external.push(route.request().url());
       return route.abort();
     });
-    await page.addInitScript(({ seed, MAIN, MIRROR }) => {
+    await page.addInitScript(({ seed, MAIN, MIRROR, startOnMirror }) => {
       if (!sessionStorage.getItem("line-fixture-seeded")) {
         localStorage.clear();
         for (const [key, value] of Object.entries(seed)) localStorage.setItem(key, value);
         sessionStorage.setItem("line-fixture-seeded", "1");
       }
-      const fixture = { base: MAIN, calls: [], lineChanged: 0, failSet: false, failMirrors: false, autoMode: "success", loggedIn: true, generation: 0, holdAuto: false, autoFinished: 0, autoCancelled: 0, autoWaiters: [] };
+      const fixture = { base: startOnMirror ? MIRROR : MAIN, calls: [], lineChanged: 0, failSet: false, failMirrors: false, autoMode: "success", loggedIn: true, generation: 0, holdAuto: false, autoFinished: 0, autoCancelled: 0, autoWaiters: [] };
       window.addEventListener("hg:line-changed", () => fixture.lineChanged++);
       Object.assign(window, {
         isTauri: true,
@@ -78,7 +78,10 @@ try {
           }
           if (command === "line_cancel") { fixture.generation++; return; }
           if (command === "line_probe") return args.urls.map(url => ({ url, ok: true, status: 200, ms: 42 }));
-          if (command === "line_health") return { base: fixture.base, ok: true, ms: 4, status: 200 };
+          if (command === "line_health") {
+            const ok = fixture.base === MIRROR ? fixture.autoMode !== "fallback" : startOnMirror;
+            return { base: fixture.base, ok, sessionBound: fixture.loggedIn, ms: 4, status: ok ? 200 : null };
+          }
           if (command === "line_try_main") return { previous: fixture.base, base: fixture.base, switched: false, probe: { ok: false, base: MAIN, tier: "main", ms: 5, status: null } };
           if (command === "line_auto") {
             const generation = ++fixture.generation;
@@ -92,14 +95,17 @@ try {
               return { previous, base: previous, switched: false, cancelled: true, pick: { base: MIRROR, tier: "mirror", ms: 34, reason: "mirror-fallback", candidates: [] } };
             }
             if (mode === "all-down") return { previous, base: previous, switched: false, cancelled: false, pick: { base: previous, tier: "none", ms: 0, reason: "all-down", candidates: [] } };
-            fixture.base = MIRROR;
+            fixture.base = startOnMirror ? MAIN : MIRROR;
             // MAIN and MIRROR are both credential-trusted: auto switch rebases, keeps login.
-            return { previous, base: MIRROR, switched: previous !== MIRROR, cancelled: false, pick: { base: MIRROR, tier: "mirror", ms: 34, reason: "mirror-fallback", candidates: [{ tier: "mirror", url: MIRROR, ok: true, reachable: true, ms: 34, status: 200 }] } };
+            const tier = fixture.base === MAIN ? "main" : "mirror";
+            return { previous, base: fixture.base, switched: previous !== fixture.base, cancelled: false,
+              pick: { base: fixture.base, tier, ms: 34, reason: tier === "main" ? "main-ok" : "mirror-fallback",
+                candidates: [{ tier, url: fixture.base, ok: true, reachable: true, ms: 34, status: 200 }] } };
           }
           throw new Error(`Unexpected IPC: ${command}`);
         } },
       });
-    }, { seed, MAIN, MIRROR });
+    }, { seed, MAIN, MIRROR, startOnMirror });
     await page.goto(`${origin}tests/line-selection.html`);
     await page.waitForFunction(() => window.lineSelectionSnapshot?.ready);
     const networkGroup = page.getByRole("button", { name: "网络设置", exact: true });
@@ -111,6 +117,26 @@ try {
 
   const calls = (page, command) => page.evaluate(command => window.lineSelectionFixture.calls.filter(call => call.command === command), command);
   const sourceButton = page => page.getByRole("button").filter({ has: page.getByText("播放源", { exact: true }) });
+
+  {
+    const { context, page } = await open({ [NEW_KEY]: "on" }, true, true);
+    await page.waitForFunction(() => window.lineSelectionFixture.calls.some(c => ["line_health", "line_auto"].includes(c.command)));
+    assert.equal(await page.evaluate(() => window.lineSelectionFixture.base), MIRROR, "Cold boot must keep a healthy signed-in mirror");
+    const before = (await calls(page, "line_health")).length;
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.waitForFunction(n => window.lineSelectionFixture.calls.filter(c => c.command === "line_health").length > n, before);
+    assert.equal(await page.evaluate(() => window.lineSelectionFixture.base), MIRROR, "Reconnecting must keep the current healthy account origin");
+    assert.equal((await calls(page, "line_try_main")).length, 0);
+    assert.equal((await calls(page, "line_auto")).length, 0);
+    // A persistently unavailable mirror still fails over.
+    const healthyProbes = (await calls(page, "line_health")).length;
+    await page.evaluate(() => { window.lineSelectionFixture.autoMode = "fallback"; window.dispatchEvent(new Event("online")); });
+    await page.waitForFunction(main => window.lineSelectionFixture.base === main && window.lineSelectionFixture.lineChanged > 0, MAIN);
+    assert.equal((await calls(page, "line_health")).length - healthyProbes, 2);
+    assert.equal(await page.evaluate(() => window.lineSelectionSnapshot.user?.id), 17);
+    report.passed.push("A healthy signed-in mirror survives boot and reconnect; sustained failure still selects an alternative");
+    await context.close();
+  }
 
   {
     const { context, page } = await open({ "hg.autoLine": "off" });
