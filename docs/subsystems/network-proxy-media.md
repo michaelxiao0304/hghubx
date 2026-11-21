@@ -33,6 +33,7 @@
   `LOCAL_ORIGIN`、`handle()`、`clear_caches()`；
   [`hls.rs`](../../src-tauri/src/media/hls.rs) 的 `load_playlist()`、`rewrite_playlist()`；
   [`image.rs`](../../src-tauri/src/media/image.rs) 的 `load_image()`；
+  [`cover_cdn.rs`](../../src-tauri/src/cover_cdn.rs) 读取官网公布的 WebP 规则并选择封面来源；
   [`segment.rs`](../../src-tauri/src/media/segment.rs) 的 `load_segment()`；
   [`response.rs`](../../src-tauri/src/media/response.rs) 的 `respond()`、`apply_byte_range()`、
   `segment_response()`。
@@ -62,8 +63,11 @@
 5. 媒体下载统一走 `fetch_bytes()`：`get_with_dns()` 取字节，失败时按
    `media_dns::eligible()` 判断是否切换公网 DNS。只对 HTTPS 域名、DNS/timeout/transport
    类错误回退；403/404/503 或地址策略拒绝不回退。成功的公网 DNS 路由按 host 记住 30 秒。
-6. `media::handle()` 接受 `/img?u=`、`/hls?u=`、`/seg?u=`。`/img` 下载 AES-128-CBC 封面并
-   校验图片魔数；`/hls` 拉清单并把 variant、key、init、part、media 等 URI 改写到本地
+6. `media::handle()` 接受 `/img?u=`、`/hls?u=`、`/seg?u=`。在固定站点或已验证的镜像，`/img`
+   从当前站点首页的 `#crypto-image-config` 读取 JSON，仅对公布的来源和图片路径尝试 WebP。WebP
+   请求只使用路径，原图的查询签名保留在原地址。配置按站点与网络配置代次共享，读取上限为 512 KiB／3 秒。
+   配置缺失、自定义线路或 WebP 下载、解密、格式检查失败时继续请求原图。WebP 尝试最多等待 5 秒。
+   两类图片均可使用 AES-128-CBC 密文或可识别的明文。`/hls` 拉清单并把 variant、key、init、part、media 等 URI 改写到本地
    `LOCAL_ORIGIN`，移除可派生的 URI 字段；`/seg` 下载分片或 Key，若返回 `#EXTM3U` 则继续改写，
    保证嵌套清单不泄漏原始地址。
 7. `apply_byte_range()` 只处理单段 `bytes=`，支持 `start-end`、`start-`、`-suffix`；无效/多段
@@ -100,6 +104,8 @@
   在途响应不能写进新作用域。
 - 失败读取不伪装成空数据：错误响应、HTML 落地页、缺少 `items/pagination` 都返回错误；
   媒体层返回 502/400，不返回 200 空 body。
+- 浏览器拒绝图片时，标准版列表用 `/img?u=…&original=1` 重试原图，最多两次。用尽后结束加载提示，
+  收到联网、切线或代理变化事件后，失败的列表封面可重新请求。影片列表和封面 CDN 的可达性需分别核实。
 - 日志不写 token、Cookie、代理认证、播放直链或查询参数；只记录固定操作名、主机/端口、
   资源编号、状态、耗时和脱敏错误类别。
 

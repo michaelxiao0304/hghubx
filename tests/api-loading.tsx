@@ -12,7 +12,7 @@ const fixture = {
   debug: [] as string[],
   ready: false,
   setActive: (_active: boolean) => {},
-  complete(cmd: string, key: string, result: "404" | "503" | "empty" | "item") {
+  complete(cmd: string, key: string, result: "404" | "503" | "empty" | "item", cover = "") {
     const index = pending.findIndex(r => r.cmd === cmd && (!key || r.args.cate === key));
     if (index < 0) throw new Error(`No pending request: ${cmd}/${key}`);
     const request = pending.splice(index, 1)[0];
@@ -22,7 +22,7 @@ const fixture = {
     }
     request.resolve({
       items: result === "empty" ? [] : [{
-        id: 991, title: `已加载${key || cmd}`, cover: "", tags: [], score: 0, hot: 0,
+        id: 991, title: `已加载${key || cmd}`, cover, tags: [], score: 0, hot: 0,
         episode_count: 1, total_episodes: 1, is_finished: true, is_original: 0,
         like_count: 0, comment_count: 0, collect_count: 0,
       }],

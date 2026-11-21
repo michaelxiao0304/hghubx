@@ -15,6 +15,8 @@ use tauri::http::Response;
 pub(crate) use response::fixture_response;
 use hls::{dec, load_playlist};
 use image::load_image;
+#[cfg(test)]
+pub(crate) use image::decode_cover;
 use segment::load_segment;
 use response::{apply_byte_range, respond, segment_response, PROXIED_IMAGE_CACHE_CONTROL};
 
@@ -65,7 +67,7 @@ pub async fn handle(path: &str, query: &str, origin: &str, range: Option<&str>) 
         serde_json::json!({"route": route, "resource": crate::playback_log::resource_id(&target)}),
     );
     let response = match path {
-        "/img" => match load_image(&target).await {
+        "/img" => match load_image(&target, !query.split('&').any(|field| field == "original=1")).await {
             Ok((kind, bytes)) => respond(
                 200,
                 &kind,
