@@ -53,6 +53,8 @@ try {
         __TAURI_INTERNALS__: { async invoke(command, args = {}) {
           fixture.calls.push({ command, args });
           if (command === "app_boot") return { strict_security: true, base: fixture.base, user: fixture.loggedIn ? { id: 17, username: "fixture-user" } : null };
+          if (command === "api_me") return { origin: fixture.base, user: { id: 17, username: "fixture-user" }, interactions: { favorite_video_ids: [] } };
+          if (command === "api_account_history") return { items: [], pagination: { page: 1, size: 100, total: 0, pages: 0 } };
           if (command === "debug_log" || command === "playback_log_write") return;
           if (command === "playback_log_status") return { enabled: false, path: "fixture.log", error: null };
           if (command === "proxy_state") return { mode: "system", url: "", effective: null, system_proxy: false, env_proxy: false };
@@ -129,10 +131,19 @@ try {
     assert.equal((await calls(page, "line_try_main")).length, 0);
     assert.equal((await calls(page, "line_auto")).length, 0);
     // A persistently unavailable mirror still fails over.
-    const healthyProbes = (await calls(page, "line_health")).length;
-    await page.evaluate(() => { window.lineSelectionFixture.autoMode = "fallback"; window.dispatchEvent(new Event("online")); });
+    const beforeFailure = await page.evaluate(() => {
+      const fixture = window.lineSelectionFixture;
+      fixture.autoMode = "fallback";
+      const start = fixture.calls.length;
+      window.dispatchEvent(new Event("online"));
+      return start;
+    });
     await page.waitForFunction(main => window.lineSelectionFixture.base === main && window.lineSelectionFixture.lineChanged > 0, MAIN);
-    assert.equal((await calls(page, "line_health")).length - healthyProbes, 2);
+    const beforeSelection = await page.evaluate(start => {
+      const commands = window.lineSelectionFixture.calls.slice(start).map(call => call.command);
+      return commands.slice(0, commands.indexOf("line_auto"));
+    }, beforeFailure);
+    assert.equal(beforeSelection.filter(cmd => cmd === "line_health").length, 2);
     assert.equal(await page.evaluate(() => window.lineSelectionSnapshot.user?.id), 17);
     report.passed.push("A healthy signed-in mirror survives boot and reconnect; sustained failure still selects an alternative");
     await context.close();
