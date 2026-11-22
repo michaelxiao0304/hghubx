@@ -9,7 +9,7 @@ import { copyText } from "../../shared/lib/clipboard";
 import { Empty, Img, Sheet } from "../../shared/ui/ui";
 import { Player } from "../playback";
 import { IBack, ICommentF, IFireF, IFlame, IHeart, IHeartF, IPlayF, ISearch, IStar, IStarF } from "../../shared/ui/icons";
-import { handleArticleClick, sanitizeHtml } from "../../shared/lib/html";
+import { handleArticleClick, parseInternalVideoId, sanitizeHtml } from "../../shared/lib/html";
 import { InplaceSearch } from "../search/InplaceSearch";
 import { FilteredContent } from "../../shared/ui/FilteredContent";
 import { TagBlockMenu } from "../../shared/ui/TagBlockMenu";
@@ -22,11 +22,12 @@ import { tr } from "../../shared/i18n";
 /* ================= 吃瓜列表 ================= */
 export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean }) {
   const { push, lineEpoch } = useStore();
-  const { preferences } = useContentPreferences();
+  const { preferences, blockReason } = useContentPreferences();
   const filtering = !preferences.paused && (preferences.blockedTags.length > 0 || preferences.hideUntagged);
   const [searching, setSearching] = useState(false);
-  const { items, page, pages, loading, err, loadMore, scroller: scrollRef, sentinel } = usePaginatedList<Post>({
+  const { items, page, pages, loading, err, autoLoadPaused, loadMore, scroller: scrollRef, sentinel } = usePaginatedList<Post>({
     filtering,
+    isVisible: (item) => !blockReason(item.tags),
     resetKey: lineEpoch,
     rootMargin: "240px",
     getId: (item) => item.id,
@@ -62,14 +63,14 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
         ) : (
           <Empty icon={<IFireF size={26} />} title={tr("暂无吃瓜内容")} />
         )}
-        <div ref={sentinel} className="h-10" />
+        <div ref={sentinel} className="h-10" aria-hidden="true" />
         {err && items.length > 0 && (
           <div className="flex flex-wrap items-center justify-center gap-3 py-2 text-[13px] text-danger" role="alert">
             <span>{tr("加载更多失败：{0}", err)}</span>
             <Button disabled={loading} onClick={() => loadMore()} className="text-primary pressable">{tr("重试")}</Button>
           </div>
         )}
-        {!loading && !err && items.length > 0 && page < pages && <Button onClick={() => loadMore()} className="w-full mt-3">{tr("加载更多")}</Button>}
+        {!loading && !err && items.length > 0 && page < pages && autoLoadPaused && <Button onClick={() => loadMore()} className="w-full mt-3">{tr("加载更多")}</Button>}
         {loading && items.length > 0 && <div className="flex justify-center py-2"><Loader className="w-6 h-6 spinner" /></div>}
       </div>
       {searching && <InplaceSearch kind="post" postLabel={tr("吃瓜帖子")} wide={wide} onClose={() => setSearching(false)} onOpenPost={(p) => push({ kind: "post", id: p.id })} />}
@@ -133,6 +134,11 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
   // React 会在 HTML 属性对象身份变化时重写 innerHTML；滚动不能让配图重新加载。
   const articleHtml = useMemo(() => ({ __html: sanitizeHtml(content) }), [content, strictSecurity]);
   const openSafeLink = (url: string) => {
+    const videoId = parseInternalVideoId(url);
+    if (videoId !== null) {
+      push({ kind: "feed", videoIds: [videoId], index: 0, title: post?.title || tr("吃瓜") });
+      return;
+    }
     api.openUrl(url).catch(() => {
       copyText(url).then(() => toast(tr("链接已复制"), "ok")).catch(() => toast(tr("复制失败"), "info"));
     });

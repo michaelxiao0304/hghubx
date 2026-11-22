@@ -77,7 +77,7 @@ function Probe() {
   return <div className="probe-stage">
     <FeedItemChrome
       showFeedback loadingStatus="" onLogin={() => {}} onNetwork={() => {}}
-      isActive isDesktop={false} fs={fsPreview} clean={clean} controlsLocked={locked} rotated={false} mode="home" kind="video" title="示例剧名"
+      isActive isDesktop={false} fs={fsPreview} clean={clean} controlsLocked={locked} idle={fsIdle} rotated={false} mode="home" kind="video" title="示例剧名"
       index={0} effectiveLength={1} bottomInset={0} curEp={1} duration={120} meta={meta} hevcUrl="hevc.mp4"
       preferHevc={preferHevc} setPreferHevc={setPreferHevc}
       landscapeVideo={false} capsuleOn={false} zoom={{ s: 1, x: 0, y: 0, g: false }} setZoom={() => {}}

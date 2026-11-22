@@ -62,6 +62,10 @@ try {
 
   const railOrder = await page.locator(".mobile-video-action-rail>button").evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-label")));
   assert.deepEqual(railOrder, ["点赞", "收藏", "评论 89 条", "更多播放设置"]);
+  const commentIcon = page.locator(".mobile-action-comments svg");
+  assert.equal(await commentIcon.getAttribute("fill"), "none");
+  assert.equal(await commentIcon.getAttribute("stroke"), "currentColor");
+  assert.equal(await commentIcon.getAttribute("width"), "27");
   assert.equal(await page.locator(".mobile-playback-episodes").innerText(), "选集 · 全109集");
   assert.equal(await page.locator(".feed-current-quality").innerText(), "HD");
   assert.equal(await page.locator(".mobile-episode-indicator").count(), 0);
@@ -72,6 +76,12 @@ try {
   assert.equal(await page.getByRole("button", { name: "视频详情", exact: true }).count(), 0);
   await page.evaluate(() => window.homeControlsProbe.setContextSearch(true));
   assert.equal(await page.locator(".feed-context-search").innerText(), "搜短剧");
+  const searchBox = await page.locator(".feed-context-search").boundingBox();
+  const qualityBox = await page.locator(".feed-current-quality").boundingBox();
+  assert.ok(searchBox && qualityBox);
+  assert.equal(searchBox.height, qualityBox.height, "Search and quality controls must share the same height");
+  assert.ok(Math.abs(searchBox.y - qualityBox.y) <= 0.5, "Search and quality controls must align on the same row");
+  await page.screenshot({ path: path.join(output, "home-top-tools.png") });
   await page.getByRole("button", { name: "搜短剧" }).click();
   assert.equal(await probe("openedTag"), "search");
   await page.evaluate(() => window.homeControlsProbe.setContextSearch(false));
@@ -160,6 +170,10 @@ try {
   await page.waitForTimeout(150);
   assert.equal(await page.locator(".feed-current-quality").count(), 0);
   assert.equal(await page.locator(".mobile-fs-controls").count(), 0);
+  assert.equal(await page.locator(".mobile-clean-lock").count(), 0, "Idle fullscreen must hide the clean lock with the other controls");
+  await page.evaluate(() => window.homeControlsProbe.setFsIdle(false));
+  await page.locator(".feed-current-quality").waitFor();
+  await page.locator(".mobile-fs-controls").waitFor();
   const fullscreenCleanLock = await page.locator(".mobile-clean-lock").boundingBox();
   assert.ok(fullscreenCleanLock && fullscreenCleanLock.x + fullscreenCleanLock.width >= 370 && Math.abs(fullscreenCleanLock.y + fullscreenCleanLock.height / 2 - 422) < 4);
   await page.evaluate(() => {
@@ -180,7 +194,7 @@ try {
   await page.screenshot({ path: path.join(output, "home-fullscreen.png") });
   await exitFullscreen.click();
   await page.locator(".mobile-fs-controls").waitFor({ state: "detached" });
-  console.log("✓ fullscreen uses a bottom-right exit, combined time, bounded episode swipes, and a clean-state right-center lock");
+  console.log("✓ fullscreen uses a bottom-right exit, combined time, bounded episode swipes, and a clean lock that follows idle visibility");
 
   await page.getByRole("button", { name: "查看标签 都市，长按可屏蔽" }).click();
   assert.equal(await probe("openedTag"), "都市");

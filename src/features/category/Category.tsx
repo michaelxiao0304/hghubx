@@ -7,11 +7,13 @@ import { useStore } from "../../shared/model/store";
 import { MediaCard, Masonry, RowCard } from "../../shared/ui/cards";
 import { FilteredContent } from "../../shared/ui/FilteredContent";
 import { useContentPreferences } from "../../shared/model/contentPreferences";
+import { AUTO_LOAD_EMPTY_PAGE_LIMIT, useAutoLoadMore } from "../../shared/lib/useAutoLoadMore";
 import { CollectionLink, CollectionLinks } from "../../shared/ui/CollectionLink";
 import { InplaceSearch } from "../search/InplaceSearch";
 import { Empty } from "../../shared/ui/ui";
 import { IAward, IBack, IChevR, IFilm, IFlame, ILayers, ISearch, ISpark, ITag, ITrophy } from "../../shared/ui/icons";
 import { tr, N_ } from "../../shared/i18n";
+import { useTabSwipe } from "../../shared/ui/hooks/useTabSwipe";
 
 export const CHANNELS = [
   { cate: "ai-duanju", name: N_("AI成人短剧"), Icon: IFilm },
@@ -198,8 +200,12 @@ const originalSort = (cate: (typeof ORIGINAL_CATES)[number]["value"]) =>
 
 export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: string; onBack: () => void; wide: boolean }) {
   const { push, lineEpoch } = useStore();
-  const { preferences } = useContentPreferences();
+  const { preferences, blockReason } = useContentPreferences();
   const filtering = !preferences.paused && (preferences.blockedTags.length > 0 || preferences.hideUntagged);
+  const blockReasonRef = useRef(blockReason);
+  blockReasonRef.current = blockReason;
+  const filteringRef = useRef(filtering);
+  filteringRef.current = filtering;
   const [searching, setSearching] = useState(false);
   const [serverSort, setServerSort] = useState<(typeof CHANNEL_SORTS)[number]["value"]>("latest");
   const [originalCate, setOriginalCate] = useState<(typeof ORIGINAL_CATES)[number]["value"]>("all");
@@ -209,6 +215,7 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
   const [pages, setPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [emptyStreak, setEmptyStreak] = useState(0);
   const filterKey = (sort: string, original: string) => `${cate}:${cate === "original" ? original : sort}`;
   const [displayedFilter, setDisplayedFilter] = useState(() => filterKey("latest", "all"));
   const [err, setErr] = useState<string | null>(null);
@@ -223,18 +230,25 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
     busy.current = true;
     setLoading(true);
     setErr(null);
-    if (reset) setRefreshing(true);
+    if (reset) { setRefreshing(true); setEmptyStreak(0); }
     try {
       const next = reset ? 1 : page + 1;
       const res = cate === "original"
         ? await api.originalVideos(originalCateOverride, next, 20, originalSort(originalCateOverride))
         : await api.category(cate, next, 20, sortOverride);
       if (seq !== requestSeq.current) return;
+      const incoming = res?.items || [];
       setPageItems((prev) => {
         const base = reset ? [] : prev;
         const seen = new Set(base.flat().map((x) => x.id));
-        return [...base, (res?.items || []).filter((x) => !seen.has(x.id))];
+        return [...base, incoming.filter((x) => !seen.has(x.id))];
       });
+      if (filteringRef.current && incoming.length > 0) {
+        const visibleCount = incoming.filter((x) => !blockReasonRef.current(x.tags)).length;
+        setEmptyStreak((prev) => (visibleCount > 0 ? 0 : (reset ? 1 : prev + 1)));
+      } else {
+        setEmptyStreak(0);
+      }
       setDisplayedFilter(filterKey(sortOverride, originalCateOverride));
       setPage(next);
       setPages(res?.pagination?.pages || next);
@@ -265,6 +279,23 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
     setErr(null);
     void loadMore(true, originalSort(value), value);
   };
+  const channelTabIndex = cate === "original"
+    ? ORIGINAL_CATES.findIndex(s => s.value === originalCate)
+    : CHANNEL_SORTS.findIndex(s => s.value === serverSort);
+  const channelTabSwipe = useTabSwipe<HTMLDivElement>({
+    rootRef: scrollContainer,
+    tabIndex: channelTabIndex,
+    tabCount: cate === "original" ? ORIGINAL_CATES.length : CHANNEL_SORTS.length,
+    onTabChange: index => {
+      if (cate === "original") {
+        const next = ORIGINAL_CATES[index];
+        if (next) changeOriginalCate(next.value);
+      } else {
+        const next = CHANNEL_SORTS[index];
+        if (next) changeServerSort(next.value);
+      }
+    },
+  });
 
   useEffect(() => {
     setPageItems([]); setPage(0); setPages(1);
@@ -275,14 +306,16 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
   }, [cate, lineEpoch]);
   const filterPending = displayedFilter !== filterKey(serverSort, originalCate);
   const replacing = refreshing || filterPending;
-  useEffect(() => {
-    const el = sentinel.current;
-    if (!el || filtering || loading || err || replacing || page >= pages) return;
-    const io = new IntersectionObserver((es) => { if (es[0].isIntersecting) void loadMore(); }, { root: scrollContainer.current, rootMargin: "300px" });
-    io.observe(el);
-    return () => io.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pages, loading, err, replacing, filtering]);
+  useEffect(() => { setEmptyStreak(0); }, [filtering, preferences.blockedTags, preferences.hideUntagged]);
+  const autoLoadPaused = filtering && emptyStreak >= AUTO_LOAD_EMPTY_PAGE_LIMIT;
+  useAutoLoadMore({
+    scrollRef: scrollContainer,
+    sentinelRef: sentinel,
+    enabled: !loading && !err && !replacing && page < pages && !autoLoadPaused,
+    watchKey: `${page}:${pages}:${items.length}`,
+    onLoadMore: () => { void loadMore(); },
+    rootMargin: "300px",
+  });
 
   const ChannelGlyph = CHANNELS.find(c => c.cate === cate)?.Icon ?? IFilm;
   return (
@@ -314,7 +347,8 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
           </div>
         )}
       </div>
-      <div ref={scrollContainer} className="flex-1 scroll-y pt-3.5 pb-8" aria-busy={loading}>
+      <div ref={scrollContainer} {...channelTabSwipe} style={{ touchAction: "pan-y" }}
+        className="flex-1 scroll-y pt-3.5 pb-8" aria-busy={loading}>
         {items.length > 0 && replacing && <p role="status" className="mb-3 text-[12px] text-mut">{loading ? tr("正在更新，暂时保留上次结果…") : tr("当前显示上次结果，请重试以更新筛选。")}</p>}
         {items.length > 0 && err && <div role="status" className="mb-3 flex flex-wrap items-center gap-2 text-[12px] text-mut"><span>{err}</span><Button className="px-3 text-primary" onClick={() => void loadMore(replacing)}>{tr("重试")}</Button></div>}
         {items.length ? (
@@ -326,9 +360,11 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
         ) : loading ? (
           <div className="flex justify-center py-10"><Loader className="w-8 h-8 spinner" /></div>
         ) : <Empty icon={<ChannelGlyph size={26} />} title={tr("该筛选下暂无内容")} sub={tr("换个筛选试试")} />}
-        <div ref={sentinel} className="h-10" />
+        <div ref={sentinel} className="h-10" aria-hidden="true" />
         {loading && items.length > 0 && <div className="flex justify-center py-3"><Loader className="w-6 h-6 spinner" /></div>}
-        {!loading && !err && !replacing && page < pages && <Button onClick={() => void loadMore()} className="my-3 px-4 text-primary">{tr("加载更多")}</Button>}
+        {!loading && !err && !replacing && page < pages && autoLoadPaused && (
+          <div className="flex justify-center"><Button onClick={() => { setEmptyStreak(0); void loadMore(); }} className="my-3 px-4 text-primary">{tr("加载更多")}</Button></div>
+        )}
         {!loading && !replacing && !err && page >= pages && items.length > 0 && (
           <div className="text-center text-[12px] text-dim py-3">{tr("— 已经到底啦 —")}</div>
         )}

@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, platform as envPlatform } from "../api/api";
 import { exitDocumentFullscreen, getFullscreenElement } from "../lib/fullscreen";
+import { setSiteOrigin } from "../lib/html";
 import { isStrictSecurity, setStrictSecurity as setHtmlStrictSecurity } from "../lib/securityMode";
 import type { User } from "../api/types";
 import { readStorage, writeAppStorage, STORAGE_KEYS } from "../storage/storage";
@@ -338,6 +339,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       reading = true;
       void api.boot(verifySession).then((r) => {
         if (!active || current !== request) return;
+        setSiteOrigin(r.base || "");
         const pending = r.pending_session;
         retryNeeded = !!pending && generation === accountRef.current.generation();
         accountRef.current.restoreSession(r.user ?? pending?.user ?? null, pending?.origin ?? r.base ?? "", generation, !!pending, r.library_origin);

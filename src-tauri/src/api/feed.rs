@@ -4,6 +4,13 @@ use super::Api;
 use serde_json::{json, Value};
 use tauri::State;
 
+fn sort_query(sort: Option<&str>) -> String {
+    match sort {
+        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
+        _ => String::new(),
+    }
+}
+
 /* ───────────────────────── 列表 ───────────────────────── */
 
 #[tauri::command]
@@ -14,8 +21,7 @@ pub async fn api_feed(state: State<'_, Api>, page: u32, size: u32) -> Result<Val
 }
 
 /// 原创频道，返回分页视频卡（结构同 api_feed）。
-/// `cate="all"` 走 `/api/videos?is_original=1`；`ai-duanju`/`ai-manju` 走
-/// `/api/videos/category/{cate}?is_original=1`。
+/// 优先解析官网 SSR 频道页与网站排序保持一致；解析失败回退 JSON 接口。
 #[tauri::command]
 pub async fn api_original_videos(
     state: State<'_, Api>,
@@ -24,10 +30,10 @@ pub async fn api_original_videos(
     size: u32,
     sort: Option<String>,
 ) -> Result<Value, String> {
-    let sort = match sort.as_deref() {
-        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
-        _ => String::new(),
-    };
+    if let Ok(value) = crate::channel_page::fetch_original(&cate, page, size).await {
+        return Ok(value);
+    }
+    let sort = sort_query(sort.as_deref());
     let path = if cate == "all" {
         format!("/api/videos?is_original=1&page={page}&size={size}{sort}")
     } else {
@@ -60,17 +66,22 @@ pub async fn api_tags(state: State<'_, Api>) -> Result<Value, String> {
     state.get("/api/tags").await
 }
 
-/// 按标签取短剧：后端按中文标签名匹配；社区标签需使用 api_post_tag。
+/// 按标签取短剧：后端按中文标签名匹配；默认按官网标签页 `latest` 排序，社区标签需使用 api_post_tag。
 #[tauri::command]
 pub async fn api_tag_videos(
     state: State<'_, Api>,
     tag: String,
     page: u32,
     size: u32,
+    sort: Option<String>,
 ) -> Result<Value, String> {
     let encoded: String = url::form_urlencoded::byte_serialize(tag.as_bytes()).collect();
+    let sort = match sort.as_deref() {
+        Some("hot") => "hot",
+        _ => "latest",
+    };
     state
-        .get(&format!("/api/videos/tag/{encoded}?page={page}&size={size}"))
+        .get(&format!("/api/videos/tag/{encoded}?page={page}&size={size}&sort={sort}"))
         .await
 }
 
@@ -98,10 +109,10 @@ pub async fn api_category(
     size: u32,
     sort: Option<String>,
 ) -> Result<Value, String> {
-    let sort = match sort.as_deref() {
-        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
-        _ => String::new(),
-    };
+    if let Ok(value) = crate::channel_page::fetch_category(&cate, page, size, sort.as_deref()).await {
+        return Ok(value);
+    }
+    let sort = sort_query(sort.as_deref());
     state
         .get(&format!(
             "/api/videos/category/{cate}?page={page}&size={size}{sort}"
@@ -111,10 +122,12 @@ pub async fn api_category(
 
 #[tauri::command]
 pub async fn api_rank(state: State<'_, Api>, kind: String) -> Result<Value, String> {
-    let kind = match kind.as_str() {
-        "recommend" | "potential" => kind,
-        _ => "hot".to_string(),
-    };
+    if !matches!(kind.as_str(), "recommend" | "potential") {
+        if let Ok(rank) = crate::channel_page::fetch_hot_rank().await {
+            return Ok(rank);
+        }
+        return state.get("/api/ranks/hot").await;
+    }
     state.get(&format!("/api/ranks/{kind}")).await
 }
 
@@ -154,10 +167,7 @@ pub async fn api_posts(
     size: u32,
     sort: Option<String>,
 ) -> Result<Value, String> {
-    let sort = match sort.as_deref() {
-        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
-        _ => String::new(),
-    };
+    let sort = sort_query(sort.as_deref());
     state
         .get(&format!("/api/posts?page={page}&size={size}{sort}"))
         .await
@@ -196,10 +206,7 @@ pub async fn api_post_category(
     sort: Option<String>,
 ) -> Result<Value, String> {
     let encoded: String = url::form_urlencoded::byte_serialize(route.as_bytes()).collect();
-    let sort = match sort.as_deref() {
-        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
-        _ => String::new(),
-    };
+    let sort = sort_query(sort.as_deref());
     state
         .get(&format!(
             "/api/posts/category/{encoded}?page={page}&size={size}{sort}"

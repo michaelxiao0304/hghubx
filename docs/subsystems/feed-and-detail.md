@@ -29,6 +29,8 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
   [`src/shared/model/accountData.ts`](../../src/shared/model/accountData.ts) 的 `generation`；
   [`src/shared/model/contentPreferences.ts`](../../src/shared/model/contentPreferences.ts) 的 `blockReason`。
 - 后端读取：[`src-tauri/src/api/feed.rs`](../../src-tauri/src/api/feed.rs)、
+  [`src-tauri/src/channel_page.rs`](../../src-tauri/src/channel_page.rs)、
+  [`src-tauri/src/search_hot.rs`](../../src-tauri/src/search_hot.rs)、
   [`src-tauri/src/api/video.rs`](../../src-tauri/src/api/video.rs)、
   [`src-tauri/src/api/interact.rs`](../../src-tauri/src/api/interact.rs)。
 
@@ -103,12 +105,17 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
 
 - 手势 overlay 的挂载只取决于条目是否活跃，不取决于 `playUrl` 是否已解析；否则切集
   过渡期的触摸会被列表原生滚动吃掉（2.2.0 反馈的连划跳视频根因）。
-- 标准版「我的」卡片支持电脑右键、手机长按进入多选，继续点按切换选择；收藏页逐项取消收藏，历史页
-  调用 `removeHistory()` 只删除选中记录。批量操作需确认，切换收藏/历史或短剧/帖子会清空选择；
+- 标准版「我的」卡片支持电脑右键、手机长按进入多选，继续点按切换选择，并可通过批量栏「全选」选中当前分栏全量记录（含未滚入视口的分页）；收藏页逐项取消收藏，历史页按选中范围调用 `clearHistory()` 或 `removeHistory()` 删除记录。批量操作需确认，切换收藏/历史或短剧/帖子会清空选择；
   收藏部分失败时保留失败项供重试，未选中的观看记录和收藏互不影响。批量取消收藏在开始时捕获
   `accountGeneration` 与 `actionRevision`；每项请求前后都校验二者，线路/代理事件或组件卸载会使修订号失效，
   随即停止未发送项并抑制旧批次的错误、完成状态与 toast。账号代次检查独立于组件重挂载，避免 cleanup
   执行前队列继续用新账号发起下一项。
+- 分类与原创频道读取（`api_category` / `api_original_videos`）优先解析官网服务端渲染频道页（[`src-tauri/src/channel_page.rs`](../../src-tauri/src/channel_page.rs)）：`ai-duanju` / `ai-manju` 对应 `/{cate}/`（`latest`）、`/{cate}/hot/`（`hot`）、`/{cate}/random/`（`random`），`original` 对应 `/original/`（`drama`）、`/original/manju/`（`comic`）、`/original/duanju/`（`short`），按 `section.hg-channel-page .hg-card-grid[data-channel-panel=...]` 严格读取非隐藏面板并还原标签、集数、播放量、评分与角标字段；分类总览预览行（`page=1 && size < 20`）按 `size` 截断，频道分页保留官网整页卡片防止跳项。任意抓取/解析失败或非预设分类自动回退既有 JSON 接口，保持 `Paged<VideoCard>` 契约不变。
+- 排行榜热播榜读取（`api_rank("hot")`）优先抓取并解析官网服务端渲染热播榜页 `/ranks/hot/`（[`src-tauri/src/channel_page.rs`](../../src-tauri/src/channel_page.rs) 的 `parse_hot_rank_html` / `fetch_hot_rank`），与官网实时热度 TOP20 口径保持一致；抓取或结构校验失败时自动回退 `/api/ranks/hot`，`recommend` 与 `potential` 继续直连 JSON 接口，保持 `{ type, items: RankItem[] }` 契约不变。
+- 搜索页热搜榜读取（`api_search_hot`，[`src-tauri/src/search_hot.rs`](../../src-tauri/src/search_hot.rs)）直接请求干净路径 `{base}/search/`（不带随机防缓存查询参数，与 `channel_page.rs` 及浏览器访问的 CDN 快照保持同源同序），按 DOM 顺序解析 `section.hg-search-hot a.hg-search-hot__item`；前端 [`src/features/search/Search.tsx`](../../src/features/search/Search.tsx) 使用官网样式的单行左右紧凑布局（序号 + 单行省略片名 + 右对齐播放量 + 右箭头），移动端无卡片底色、宽屏（`>= 560px`）保持双列紧凑卡片。
+- 标签短剧列表（`api_tag_videos`）默认向 `/api/videos/tag/{tag}` 显式传 `sort=latest`（仅显式请求 `"hot"` 时用 `sort=hot`），使标准版标签页与 TV 端标签筛选同官网 `/tag/{slug}/` 默认 `latest` 排序保持一致。
+- 分页列表（频道页、吃瓜列表、专题/标签详情、关注/创作者作品与全局/栏目搜索）统一使用 [`src/shared/lib/useAutoLoadMore.ts`](../../src/shared/lib/useAutoLoadMore.ts)（`IntersectionObserver` + 滚动位置检查）在接近底部哨兵时自动加载下一页，正常态不再展示手动「加载更多」按钮；开启标签屏蔽时同样保持上滑自动加载，仅当连续 2 页过滤后均无可见条目（`AUTO_LOAD_EMPTY_PAGE_LIMIT = 2`）才暂停自动续载并显示手动「加载更多」兜底按钮，点击手动加载或调整筛选会重置计数。
+- 视频卡片（[`src/shared/ui/cards.tsx`](../../src/shared/ui/cards.tsx) 的 `WaterfallCard` 与 `RowCard`）在海报左上角按「原创」「热播」「新片」（`new_at` 72 小时窗口）顺序显示角标，与右上角评分保持间距不遮挡；集数状态移至海报底部遮罩左侧（与播放量同排），保留「我的」页 `MediaCard` 的「新更 N 集」单角标展示。
 - 标准版「我的」收藏与观看历史保持原有网格列数；滚动容器接近底部哨兵（提前 300px）时
   每次扩展 12 项，不再显示「加载更多」按钮。
 - 标准版「我的 → 收藏 → 短剧」重新激活时，按已展现的列表范围后台刷新详情，每批最多 6 部。
@@ -123,9 +130,11 @@ Feed 负责列表播放页的条目位置、详情/帖子读取、标签门、�
 - 吃瓜详情的正文仅在正文内容或安全模式改变时重新清洗。渲染时复用同一个
   `dangerouslySetInnerHTML` 属性对象；滚动更新「阅读进度」以及刷新得到同一正文时不替换
   图片节点，避免懒加载图片反复消失、重载和撑开布局（issue #165）。
+- 吃瓜正文链接拦截（[`src/shared/lib/html.ts`](../../src/shared/lib/html.ts) 的 `handleArticleClick` / `parseInternalVideoId`、`PostDetail` 与 `ArticlePanel`）：`store.tsx` 启动/切线读取 `boot().base` 后同步 `setSiteOrigin`，点击正文 `<a>` 时仅对主站或当前激活线路同源的 `/video/{id}/` 链接入栈站内 `feed` 播放页，其余外链与非规范路径仍交 `api.openUrl` 打开（失败回退剪贴板）。
 - 播放页状态提示（上下划切集、剧集边界、上下划切集开关、屏幕锁定/解锁）统一带 `tag="playback-hint"`（`Feed.tsx`、`FeedPlayerShellChrome.tsx`、`useFeedTouchGestures.ts` 与 `useFeedViewport.ts`）；`store.tsx` 的
   `pushToastItem` 对同 tag 原地替换内容并重置 2200ms 计时，快速连续操作只显示一张最新卡片，
-  不堆叠、不重放入场动画；无 tag 的普通 toast 仍按原逻辑堆叠（最多 3 张）。移动端全屏切集提示通过 `pendingEpisodeToast` state 等待新集解码宽高后再弹出，避免横屏旋转舞台就绪前在竖屏位置提前闪现。桌面端开启「上下划切集」或处于全屏时，
+  不堆叠、不重放入场动画；无 tag 的普通 toast 仍按原逻辑堆叠（最多 3 张）。同剧同作用域（`permissionKey` 不变）切集过渡期内，
+  `Feed.tsx` 沿用本剧最近一次已确认的宽高比例直到新集回传真实尺寸，避免 `.player-root` 丢掉 `.fs-landscape` 回退竖屏导致旋转舞台和已有提示卡片闪回竖屏位置（换剧、切账号/线路或改过滤规则仍立即清零；首次进入全屏尚无已确认宽高时继续由 `pendingEpisodeToast` 等待解码）；`ToastHost` 通过 `registerRotatedToastHost` 在绘制前响应式同步 `.fs-landscape` 宿主与偏移，进出全屏不滞留旧坐标。桌面端开启「上下划切集」或处于全屏时，
   `useFeedViewport` 在播放区滚动容器上注册非被动 `wheel` 监听（`{ passive: false }`），按位移阈值与冷却时间将
   滚轮/触控板纵向滚动转为单步 `stepDir`，避免浏览器原生纵向滚动直接切到下一部剧；底部控制栏「下一集 ↓ / 下一部 ↓」
   按钮同样遵循 `swipeEp` 开关。
@@ -141,8 +150,8 @@ pnpm test:post-flicker
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
-`test:smoke` 当前包含 `api-loading`、`storage-migration`、`line-selection`、
-`diagnostic-copy`、`ui-feedback`、`home-controls`、`account-sync`（最后运行）。账号切换期间批量取消收藏的
+`test:smoke` 当前包含 `api-loading`、`channel-autoload-badges`、`storage-migration`、`line-selection`、
+`diagnostic-copy`、`ui-feedback`、`home-controls`、`account-sync` 与 `i18n`。账号切换期间批量取消收藏的
 fixture 位于 `scripts/test-account-sync-empty-state.mjs`；需要单独运行时可执行
 `node scripts/test-account-sync-empty-state.mjs`。浏览器 fixture 使用 mock Tauri IPC 且阻断外部请求，
 不能证明真实上游的正文结构或账号接口；真实接口变化需要另加网络隔离的 fixture 或手动验证。

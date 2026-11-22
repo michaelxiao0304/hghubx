@@ -97,7 +97,7 @@ export function SearchHistory({ items, onPick, onRemove, onClear, className = ""
           <Button onClick={clearAll} className="ios-history-action -mr-2">{tr("清空")}</Button>
         )}
       </div>
-      <div className={editing ? "flex flex-wrap gap-3 mt-2.5" : "flex flex-wrap gap-2 mt-2.5"}>
+      <div className="flex flex-wrap gap-2 mt-2.5">
         {items.map((term) => (
           <Button
             key={term}
@@ -111,10 +111,9 @@ export function SearchHistory({ items, onPick, onRemove, onClear, className = ""
             onContextMenu={(event) => { event.preventDefault(); setEditing(true); }}
             aria-description={editing ? undefined : tr("长按可删除")}
             title={editing ? tr("点击删除") : tr("长按可删除")}
-            style={editing ? { height: 36, minHeight: 36, minWidth: 0 } : undefined}
-            className={editing ? "ios-history-chip" : "ios-filter-pill text-on/90"}
+            className="ios-filter-pill relative text-on/90"
           >
-            <span className={editing ? "ios-history-chip-label" : undefined}>{term}</span>
+            {term}
             {editing && <span aria-hidden="true" className="ios-history-chip-remove"><IClose size={11} /></span>}
           </Button>
         ))}

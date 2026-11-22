@@ -13,7 +13,7 @@
 - 沿用与既有 `com.hghubx.tv` 相同的签名证书与单调递增 `versionCode`，支持直接覆盖升级，保留本机收藏、观看记录与启动 PIN。
 
 ## 致谢
-- 贡献者/反馈者（无内容时整段删除）。
+- 贡献者/反馈者用裸 `@username`（勿加反引号，GitHub Release 才会自动展示 Contributors 头像栏；无内容时整段删除）。
 
 ## 验证
 - TV workflow run id；TV 遥控器验收与实机回归结论。

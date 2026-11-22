@@ -5,6 +5,9 @@ import type { Toast } from "../../shared/model/store";
 import type { VideoHandle } from "../playback";
 import { tr } from "../../shared/i18n";
 
+/* Action confirmations share the player hint slot so rapid taps replace instead of stacking. */
+const ACTION_TOAST_SLOT = "playback-hint";
+
 export type FeedMeta = {
   title: string;
   cover: string;
@@ -48,7 +51,7 @@ type Args = {
   setCollected: (kind: "video" | "post", id: number, on: boolean, knownEpisodes?: number) => Promise<void>;
   setFollowing: (uid: number, on: boolean) => Promise<void>;
   actionPending: (key: string) => boolean;
-  toast: (msg: string, icon?: Toast["icon"]) => void;
+  toast: (msg: string, icon?: Toast["icon"], tag?: string) => void;
 };
 
 export function useFeedActions({
@@ -79,9 +82,9 @@ export function useFeedActions({
       await setLiked(kind, curId, curEp, on);
       if (!actionIsCurrent()) return;
       if (on) setHeartBurst((n) => n + 1);
-      toast(on ? tr("已加入喜欢") : tr("已取消喜欢"), on ? "heart" : "info");
+      toast(on ? tr("已加入喜欢") : tr("已取消喜欢"), on ? "heart" : "info", ACTION_TOAST_SLOT);
     } catch (error) {
-      if (actionIsCurrent()) toast(error instanceof Error ? error.message : tr("点赞失败，请重试"), "info");
+      if (actionIsCurrent()) toast(error instanceof Error ? error.message : tr("点赞失败，请重试"), "info", ACTION_TOAST_SLOT);
     } finally { pendingActions.current.delete(pendingKey); }
   };
 
@@ -93,9 +96,9 @@ export function useFeedActions({
     const knownEpisodes = kind === "video" ? (detail ? detailEpisodeCount(detail) : meta.episodes.length) : undefined;
     try {
       await setCollected(kind, curId, on, knownEpisodes);
-      if (actionIsCurrent()) toast(on ? tr("已收藏") : tr("已取消收藏"), on ? "star" : "info");
+      if (actionIsCurrent()) toast(on ? tr("已收藏") : tr("已取消收藏"), on ? "star" : "info", ACTION_TOAST_SLOT);
     } catch (error) {
-      if (actionIsCurrent()) toast(error instanceof Error ? error.message : tr("收藏失败，请重试"), "info");
+      if (actionIsCurrent()) toast(error instanceof Error ? error.message : tr("收藏失败，请重试"), "info", ACTION_TOAST_SLOT);
     } finally { pendingActions.current.delete(pendingKey); }
   };
 
@@ -108,9 +111,9 @@ export function useFeedActions({
     const on = !follows.includes(uid);
     try {
       await setFollowing(uid, on);
-      if (actionIsCurrent()) toast(on ? tr("已关注 {0}", meta.author) : tr("已取消关注"), on ? "ok" : "info");
+      if (actionIsCurrent()) toast(on ? tr("已关注 {0}", meta.author) : tr("已取消关注"), on ? "ok" : "info", ACTION_TOAST_SLOT);
     } catch (error) {
-      if (actionIsCurrent()) toast(error instanceof Error ? error.message : tr("关注失败，请重试"), "info");
+      if (actionIsCurrent()) toast(error instanceof Error ? error.message : tr("关注失败，请重试"), "info", ACTION_TOAST_SLOT);
     } finally { pendingActions.current.delete(pendingKey); }
   };
 

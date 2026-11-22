@@ -136,6 +136,7 @@ try {
   await dialog.waitFor();
   const history = dialog.getByRole("region", { name: "搜索历史", exact: true });
   await history.waitFor();
+  await page.waitForTimeout(420);
   assert.equal(await history.getByRole("button", { name: "清空", exact: true }).count(), 1,
     "Clear all remains the only header action");
   assert.equal(await history.getByRole("button", { name: "完成", exact: true }).count(), 0,
@@ -143,11 +144,29 @@ try {
   const held = history.getByRole("button", { name: "都市", exact: true });
   const box = await held.boundingBox();
   assert.ok(box, "History term is visible");
+  await history.screenshot({ path: fileURLToPath(new URL("history-before.png", output)), animations: "disabled" });
+  const beforeChip = await held.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, fontSize: getComputedStyle(element).fontSize };
+  });
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.waitForTimeout(560);
   await page.mouse.up();
+  await page.waitForTimeout(320);
   await history.getByRole("button", { name: "删除搜索历史 星河", exact: true }).waitFor();
+  const armed = history.getByRole("button", { name: "删除搜索历史 都市", exact: true });
+  const afterChip = await armed.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, fontSize: getComputedStyle(element).fontSize };
+  });
+  assert.equal(afterChip.fontSize, beforeChip.fontSize, "Long press must keep the history chip font size");
+  for (const key of ["x", "y", "width", "height"]) {
+    assert.ok(Math.abs(afterChip[key] - beforeChip[key]) <= 0.5,
+      `Long press must keep the history chip ${key}: before=${beforeChip[key]} after=${afterChip[key]}`);
+  }
+  assert.ok((await armed.locator(".ios-history-chip-remove").count()) === 1, "Long press adds the top-right remove control");
+  await history.screenshot({ path: fileURLToPath(new URL("history-editing.png", output)), animations: "disabled" });
   assert.equal(await history.getByRole("button", { name: "完成", exact: true }).count(), 1,
     "Long press exposes done to leave batch deletion");
   assert.equal(await history.getByText("都市", { exact: true }).count(), 1, "Releasing a long press must not delete the held term");

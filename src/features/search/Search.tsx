@@ -5,12 +5,14 @@ import { api, fmt, isMobile } from "../../shared/api/api";
 import type { HotSearchVideo, Post, RankItem, VideoCard } from "../../shared/api/types";
 import { useStore } from "../../shared/model/store";
 import { useContentPreferences } from "../../shared/model/contentPreferences";
+import { useAutoLoadMore } from "../../shared/lib/useAutoLoadMore";
 import { MediaCard, Masonry, RankRow } from "../../shared/ui/cards";
 import { FilteredContent } from "../../shared/ui/FilteredContent";
 import { Empty } from "../../shared/ui/ui";
 import { useSearchResults } from "./useSearchResults";
 import { SearchTags } from "./SearchTags";
 import { SearchHistory } from "./SearchHistory";
+import { useRankSwipe } from "./useRankSwipe";
 import { IBack, IChevR, IClose, IFireF, IPlayF, IRefresh, ISearch, ITrophy } from "../../shared/ui/icons";
 import { tr, N_ } from "../../shared/i18n";
 
@@ -27,6 +29,8 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
   const posts = result?.kind === "post" ? result.items as Post[] : [];
   const count = result?.items.length ?? 0;
   const inputRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const [hotVideos, setHotVideos] = useState<HotSearchVideo[]>([]);
   const [hotLoading, setHotLoading] = useState(false);
   const [hotError, setHotError] = useState<string | null>(null);
@@ -148,22 +152,33 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
     : hotVideos.map(v => ({ ...v, tags: undefined as readonly string[] | undefined }));
 
   const renderHotList = (list: typeof verifiedHotVideos) => list.length > 0 ? (
-    <ol className="ios-search-hot-grid mt-3" aria-busy={hotLoading || hotTagPending}>
+    <ol className="ios-search-hot-grid mt-2.5" aria-busy={hotLoading || hotTagPending}>
       {list.map((video, i) => (
         <li key={video.video_id} className="min-w-0">
           <Button aria-label={tr("播放 {0}", video.title)} title={video.title} className="ios-search-hot-item"
             onClick={() => push({ kind: "feed", videoIds: list.map(item => item.video_id), index: i, title: tr("热搜榜") })}>
             <span aria-hidden="true" className={`ios-search-hot-rank ${i < 3 ? "text-primary" : "text-mut"}`}>{String(i + 1).padStart(2, "0")}</span>
-            <span className="ios-search-hot-content">
-              <span className="ios-search-hot-title">{video.title}</span>
-              {video.plays && <span className="ios-search-hot-plays"><IPlayF size={10} />{video.plays}</span>}
-            </span>
-            <IChevR size={15} className="text-mut" />
+            <span className="ios-search-hot-title">{video.title}</span>
+            {video.plays && <span className="ios-search-hot-plays"><IPlayF size={9} />{video.plays}</span>}
+            <IChevR size={14} className="ios-search-hot-arrow text-mut" />
           </Button>
         </li>
       ))}
     </ol>
   ) : null;
+
+  const canAutoLoad = Boolean(
+    active && submitted && result && result.keyword === submitted && result.kind === tab
+    && result.page < result.pages && !loading && !err && !results.autoLoadPaused,
+  );
+  useAutoLoadMore({
+    scrollRef,
+    sentinelRef,
+    enabled: canAutoLoad,
+    watchKey: `${result?.page ?? 0}:${result?.pages ?? 0}:${count}`,
+    onLoadMore: () => results.loadMore(),
+    rootMargin: "300px",
+  });
 
   return (
     <div className="ios-page absolute inset-0 bg-bg flex flex-col">
@@ -189,7 +204,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
         </Button>
       </div>
 
-      <div className="flex-1 scroll-y pb-24">
+      <div ref={scrollRef} className="flex-1 scroll-y pb-24">
         {!querying ? (
           <>
             <Surface role="region" aria-label={tr("热搜榜")} className="mt-1 rounded-(--r-md) bg-s2 p-3.5 a-rise">
@@ -264,10 +279,11 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
                     ))}
                   </div>}</FilteredContent>
                 )}
+                <div ref={sentinelRef} className="h-6" aria-hidden="true" />
                 <div className="flex justify-center py-4">
                   {loading ? <Loader label={tr("搜索结果更新中")} className="w-6 h-6 spinner" />
                     : !err && result.keyword === submitted && (result.page < result.pages ? (
-                      <Button onClick={results.loadMore} className="px-5 h-9 rounded-(--r-ctl) bg-s3 text-[13px] text-on/85 pressable">{tr("加载更多")}</Button>
+                      results.autoLoadPaused && <Button onClick={() => results.loadMore(true)} className="px-5 h-9 rounded-(--r-ctl) bg-s3 text-[13px] text-on/85 pressable">{tr("加载更多")}</Button>
                     ) : <span className="text-[12px] text-dim">{tr("— 已经到底啦 —")}</span>)}
                 </div>
               </> : loading ? (
@@ -339,9 +355,16 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
   const err = state?.error ?? "";
   const max = Math.max(1, ...items.map((x) => x.metric_value || 0));
   const meta = RANK_TABS.find((t) => t.k === tab)!;
+  const tabIndex = RANK_TABS.findIndex(item => item.k === tab);
+  const rankSwipe = useRankSwipe({
+    tabIndex,
+    tabCount: RANK_TABS.length,
+    onTabChange: index => setTab(RANK_TABS[index].k),
+  });
 
   return (
-    <div className="ios-page absolute inset-0 bg-bg flex flex-col">
+    <div ref={rankSwipe.rootRef} {...rankSwipe.handlers} style={{ touchAction: "pan-y" }}
+      className="ios-page absolute inset-0 bg-bg flex flex-col">
       <div className="ios-subpage-header shrink-0 relative overflow-hidden" style={{ paddingTop: "var(--sat, 0px)" }}>
         <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />
         <div className="ios-subpage-inner relative">
@@ -356,7 +379,7 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
               {loading ? <Loader label={tr("正在更新榜单")} className="w-4 h-4" /> : <IRefresh size={18} />}
             </Button>
           </div>
-          <SegmentedControl className="mb-3" aria-label={tr("榜单类型")} activeIndex={RANK_TABS.findIndex(item => item.k === tab)}>
+          <SegmentedControl className="mb-3" aria-label={tr("榜单类型")} activeIndex={tabIndex}>
             {RANK_TABS.map((t) => (
               <Button aria-pressed={tab === t.k} key={t.k} onClick={() => setTab(t.k)}>{tr(t.label)}</Button>
             ))}

@@ -144,6 +144,28 @@ try {
   await sleep(2400);
   await page.waitForFunction(() => document.querySelectorAll(".a-toast").length === 0);
 
+  // ---- 契约 1：点赞/收藏连续触发共用 playback-hint 单槽 ----
+  await page.evaluate(async () => {
+    await window.feedActionProbe.fav();
+    await window.feedActionProbe.fav();
+    await window.feedActionProbe.like();
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".a-toast").length === 1);
+  assert.equal(await toastCount(), 1, "连续点赞/收藏应只保留一张卡片");
+  const actionToast = await page.evaluate(() => {
+    const list = window.uiFeedbackProbe.toasts();
+    return { count: list.length, tag: list[0]?.tag, msg: list[0]?.msg, text: document.querySelector(".a-toast")?.textContent ?? "" };
+  });
+  assert.equal(actionToast.count, 1);
+  assert.equal(actionToast.tag, "playback-hint");
+  assert.equal(actionToast.msg, "已加入喜欢");
+  assert.ok(actionToast.text.includes("已加入喜欢"), `卡片应换成最后一次操作提示：${actionToast.text}`);
+  report.toast.action = actionToast;
+  report.passed.push("toast-feed-action-single-slot");
+  await page.locator(".a-toast").screenshot({ path: join(output, "feed-action-toast.png") });
+  await sleep(2400);
+  await page.waitForFunction(() => document.querySelectorAll(".a-toast").length === 0);
+
   await page.evaluate(() => {
     window.uiFeedbackProbe.toast("普通提示 A", "info");
     window.uiFeedbackProbe.toast("普通提示 B", "ok");

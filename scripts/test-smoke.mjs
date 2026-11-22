@@ -8,11 +8,15 @@ import { dirname, resolve } from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tests = [
   ["api-loading", "scripts/test-api-loading.mjs"],
+  ["channel-autoload-badges", "scripts/test-channel-autoload-badges.mjs"],
   ["storage-migration", "scripts/test-storage-migration.mjs"],
   ["line-selection", "scripts/test-line-selection.mjs"],
   ["diagnostic-copy", "scripts/test-diagnostic-copy.mjs"],
   ["ui-feedback", "scripts/test-ui-feedback.mjs"],
+  ["profile-swipe", "scripts/test-profile-swipe.mjs"],
+  ["channel-swipe", "scripts/test-channel-swipe.mjs"],
   ["home-controls", "tests/test-home-controls.mjs"],
+  ["rank-swipe", "scripts/test-rank-swipe.mjs"],
   ["account-sync", "scripts/test-account-sync-empty-state.mjs"],
   ["i18n", "scripts/test-i18n.mjs"],
 ];

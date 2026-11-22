@@ -154,8 +154,8 @@ export const api = {
   topics: () => call<{ items: TopicCard[] }>("api_topics"),
   topic: (slug: string, page = 1, size = 20) => call<TopicDetail>("api_topic", { slug, page, size }),
   tags: () => call<{ categories: TagGroup[] }>("api_tags"),
-  tagVideos: (tag: string, page = 1, size = 20) =>
-    call<Paged<VideoCard>>("api_tag_videos", { tag, page, size }),
+  tagVideos: (tag: string, page = 1, size = 20, sort: "latest" | "hot" = "latest") =>
+    call<Paged<VideoCard>>("api_tag_videos", { tag, page, size, sort }),
   postTag: (tag: string, page = 1, size = 20) =>
     call<Paged<Post>>("api_post_tag", { tag, page, size }),
   category: (cate: string, page = 1, size = 20, sort?: string) =>
@@ -226,15 +226,23 @@ export const api = {
   proxyTest: (mode: ProxyMode, url: string) => call<ProxyProbe>("proxy_test", { mode, url }),
 
   /* 更新检查：对比 GitHub Release 的 tag */
-  checkUpdate: () => call<UpdateInfo>("check_update"),
+  checkUpdate: (opts?: { edition?: "tv"; currentVersion?: string }) =>
+    call<UpdateInfo>("check_update", opts),
   openUrl: (url: string) => call<void>("open_url", { url }),
 };
 
 /* ── 更新检查 ───────────────────────────────────────────── */
 
+export type UpdateAsset = {
+  name: string;
+  url: string;
+  size?: number | null;
+  sha256?: string | null;
+};
+
 export type UpdateInfo = {
   /** 当前平台对应的安装包；没有就是这次 release 没给本平台出包 */
-  asset?: { name: string; url: string } | null;
+  asset?: UpdateAsset | null;
   current: string;
   latest: string;
   tag?: string;
