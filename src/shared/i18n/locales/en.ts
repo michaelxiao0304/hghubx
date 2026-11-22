@@ -648,6 +648,7 @@ const en: Record<string, string> = {
   "缓存已清理（含 WebKit 媒体缓存）": "Cache cleared (including WebKit media cache)",
   "网络": "Network",
   "网络诊断": "Network Diagnostics",
+  "如果网络诊断正常，但视频一直转圈或封面加载失败，请在 VPN 客户端将路由模式从「规则分流」切换为「全局代理」，然后重试。": "If network diagnostics pass but videos keep buffering or cover images fail to load, switch your VPN app from rule-based routing to global proxy mode and try again.",
   "网络诊断失败：{0}": "Network diagnostics failed: {0}",
   "网络诊断报告": "Network Diagnostic Report",
   "网络诊断报告已复制": "Network diagnostic report copied",

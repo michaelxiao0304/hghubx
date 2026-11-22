@@ -241,6 +241,9 @@ export default function Settings({ onBack, initialSection }: { onBack: () => voi
 
           {section(N_("网络"), <>
             <ProxySettings />
+            <p className="px-4 py-2 text-[13px] text-mut leading-relaxed">
+              {tr("如果网络诊断正常，但视频一直转圈或封面加载失败，请在 VPN 客户端将路由模式从「规则分流」切换为「全局代理」，然后重试。")}
+            </p>
             <Button onClick={() => setLineOpen(true)} className="ios-settings-row text-left pressable">
               <span className="ios-setting-icon"><IBoltF size={16} /></span>
               <div className="flex-1 min-w-0">
