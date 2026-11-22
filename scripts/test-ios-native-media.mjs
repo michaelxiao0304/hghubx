@@ -268,7 +268,7 @@ try {
       assert.equal(failed.assignments.length, 0);
       await page.evaluate(() => { window.nativeMediaFixture.fail = false; window.dispatchEvent(new Event("hg:proxy-changed")); });
       await page.waitForFunction(() => window.nativeMediaFixture.origins === 2 && document.querySelector("video")?.getAttribute("src")?.startsWith("http://127.0.0.1:"));
-      assert.equal((await snapshot(page)).src, `${ORIGIN}/hls?u=${encodeURIComponent(UPSTREAM)}`, "proxy recovery retries failed transport initialization");
+      assert.equal((await snapshot(page)).src, `${ORIGIN}/hls?refresh=1&u=${encodeURIComponent(UPSTREAM)}`, "proxy recovery retries transport initialization with a fresh playlist");
       await page.evaluate(() => { window.nativeMediaFixture.fail = true; });
       await render(page, { src: "https://media.fixture.invalid/failed-again" });
       assert.equal((await snapshot(page)).src, null);

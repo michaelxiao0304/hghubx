@@ -66,6 +66,7 @@ pub async fn handle(path: &str, query: &str, origin: &str, range: Option<&str>) 
         "proxy.begin",
         serde_json::json!({"route": route, "resource": crate::playback_log::resource_id(&target)}),
     );
+    let refresh = query.split('&').any(|param| param == "refresh=1");
     let response = match path {
         "/img" => match load_image(&target, !query.split('&').any(|field| field == "original=1")).await {
             Ok((kind, bytes)) => respond(
@@ -76,7 +77,7 @@ pub async fn handle(path: &str, query: &str, origin: &str, range: Option<&str>) 
             ),
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
-        "/hls" => match load_playlist(&target, origin).await {
+        "/hls" => match load_playlist(&target, origin, refresh).await {
             Ok(text) => respond(
                 200,
                 "application/vnd.apple.mpegurl",
@@ -85,8 +86,8 @@ pub async fn handle(path: &str, query: &str, origin: &str, range: Option<&str>) 
             ),
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
-        "/seg" => match load_segment(&target).await {
-            Ok((ctype, bytes)) => segment_response(&target, ctype.as_deref(), bytes.as_ref().clone(), origin),
+        "/seg" => match load_segment(&target, refresh).await {
+            Ok((ctype, bytes)) => segment_response(&target, ctype.as_deref(), bytes.as_ref().clone(), origin, refresh),
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
         _ => respond(404, "text/plain", b"not found".to_vec(), "no-store"),

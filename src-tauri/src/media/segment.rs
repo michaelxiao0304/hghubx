@@ -45,12 +45,19 @@ fn segment_cache_key(scope: SegmentScope, url: &str) -> String {
     )
 }
 
-fn cached_segment(scope: SegmentScope, url: &str) -> Option<(String, Arc<Vec<u8>>)> {
+fn cached_segment(scope: SegmentScope, url: &str, refresh: bool) -> Option<(String, Arc<Vec<u8>>)> {
     let key = segment_cache_key(scope, url);
-    if let Some(hit) = KEY_CACHE.lock().unwrap().get(&key).cloned() {
-        return Some(hit);
+    for cache in [&KEY_CACHE, &SEG_CACHE] {
+        let mut cache = cache.lock().unwrap();
+        if let Some((mime, bytes)) = cache.get(&key) {
+            if refresh && super::response::is_playlist(Some(mime), bytes) {
+                cache.remove(&key);
+            } else {
+                return Some((mime.clone(), bytes.clone()));
+            }
+        }
     }
-    SEG_CACHE.lock().unwrap().get(&key).cloned()
+    None
 }
 
 /// Discard a response that belongs to a superseded transport or cache epoch.
@@ -146,9 +153,9 @@ where
 }
 
 /// 分片 / AES Key 带内存缓存：拖动进度条时避免重复拉取同一片造成卡顿。
-pub async fn load_segment(url: &str) -> SegmentResult {
+pub async fn load_segment(url: &str, refresh: bool) -> SegmentResult {
     let scope = segment_scope();
-    if let Some((ctype, hit)) = cached_segment(scope, url) {
+    if let Some((ctype, hit)) = cached_segment(scope, url, refresh) {
         return Ok((Some(ctype), hit));
     }
     let key = segment_cache_key(scope, url);
@@ -158,7 +165,7 @@ pub async fn load_segment(url: &str) -> SegmentResult {
 async fn download_segment(url: &str, scope: SegmentScope) -> SegmentResult {
     // Another request may have populated the completed cache while this one
     // was waiting for the single-flight lock.
-    if let Some((ctype, hit)) = cached_segment(scope, url) {
+    if let Some((ctype, hit)) = cached_segment(scope, url, false) {
         return Ok((Some(ctype), hit));
     }
     let (ctype, bytes) = fetch_bytes(url).await?;
@@ -324,8 +331,8 @@ mod tests {
             bytes.clone(),
             bytes.len(),
         ));
-        assert!(cached_segment(new, url).is_none());
-        assert!(cached_segment(old, url).is_none());
+        assert!(cached_segment(new, url, false).is_none());
+        assert!(cached_segment(old, url, false).is_none());
 
         assert!(store_segment_for_scope_with(
             old,
@@ -336,8 +343,8 @@ mod tests {
             bytes.len(),
             || old,
         ));
-        assert!(cached_segment(old, url).is_some());
-        assert!(cached_segment(new, url).is_none());
+        assert!(cached_segment(old, url, false).is_some());
+        assert!(cached_segment(new, url, false).is_none());
 
         SEG_CACHE
             .lock()
@@ -355,7 +362,7 @@ mod tests {
             bytes.len(),
             || new,
         ));
-        assert!(cached_segment(old, url).is_none());
-        assert!(cached_segment(new, url).is_none());
+        assert!(cached_segment(old, url, false).is_none());
+        assert!(cached_segment(new, url, false).is_none());
     }
 }

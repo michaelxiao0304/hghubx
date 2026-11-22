@@ -7,7 +7,7 @@ import { usePlaybackWatchdog } from "./usePlaybackWatchdog";
 import { mediaHost, mediaResource, observeHls, registerHlsVersion, usePlayerDiagnostics } from "../../shared/diagnostics/playbackDiagnostics";
 import { usePlaybackActivity } from "./usePlaybackActivity";
 import { useProxyPlaybackRecovery } from "./useProxyPlaybackRecovery";
-import { createHlsRecovery, type HlsRecovery } from "./hlsRecovery";
+import { createHlsRecovery, PlaybackLoader, type HlsRecovery } from "./hlsRecovery";
 import AmbientGlow from "./AmbientGlow";
 import { setBalanceVolume } from "./balanceVolume";
 import { tr } from "../../shared/i18n";
@@ -161,7 +161,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     video.addEventListener("resize", onVideoResize);
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
-    const source = playbackSource(src, Hls.isSupported());
+    const source = playbackSource(src, Hls.isSupported(), !!resume);
     let disconnectNative: (() => void) | undefined;
     trace("source.load", { engine: source.engine, auto_play: autoPlay, resource: mediaResource(src), host: mediaHost(src) });
 
@@ -178,6 +178,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
 
     if (source.engine === "hls.js") {
       const hls = new Hls({
+        loader: PlaybackLoader,
         // 禁用从插播/内容引导 JSON 派生直连 URL 的可选功能。
         interstitialsController: undefined,
         contentSteeringController: undefined,

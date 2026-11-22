@@ -5,7 +5,7 @@ import { tr } from "../../shared/i18n";
 type PlaybackSource = { engine: "hls.js" | "native"; url: string; route: string };
 
 /** Only our own media routes carry a wrapped upstream URL. An upstream ?u= is opaque. */
-export function playbackSource(src: string, hlsSupported: boolean): PlaybackSource {
+export function playbackSource(src: string, hlsSupported: boolean, refreshPlaylist = false): PlaybackSource {
   let route = "";
   let direct = false;
   try {
@@ -15,8 +15,9 @@ export function playbackSource(src: string, hlsSupported: boolean): PlaybackSour
       direct = source.pathname === "/seg";
     }
   } catch { /* An unwrapped source is passed intact to the playlist route. */ }
-  const url = route ? `${LOCAL}${route}` : playlist(src);
-  if (!route) route = url.slice(LOCAL.length);
+  if (!route) route = playlist(src).slice(LOCAL.length);
+  if (refreshPlaylist) route = route.replace("?", "?refresh=1&");
+  const url = `${LOCAL}${route}`;
   return { engine: hlsSupported && !direct ? "hls.js" : "native", url, route };
 }
 

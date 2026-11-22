@@ -1,4 +1,14 @@
-import Hls, { type ErrorData } from "hls.js";
+import Hls, { type ErrorData, type LoaderCallbacks, type LoaderConfiguration, type LoaderContext } from "hls.js";
+
+/** 分片失败会连同密钥重新调度。让 HLS 控制器持有重试，避免旧密钥请求在播放器销毁后自行重试。 */
+export class PlaybackLoader extends Hls.DefaultConfig.loader {
+  override load(context: LoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<LoaderContext>) {
+    if ("keyInfo" in context) {
+      config = { ...config, loadPolicy: { ...config.loadPolicy, errorRetry: null, timeoutRetry: null } };
+    }
+    super.load(context, config, callbacks);
+  }
+}
 
 /** A bounded recovery queue shared by the feed and inline post player. */
 export function createHlsRecovery({ hls, video, url, isCurrent, isActive, resumePlayback, onFatal }: {

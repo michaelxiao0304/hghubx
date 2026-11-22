@@ -5,6 +5,7 @@ const fixture = (window as unknown as { nativeMediaFixture: {
 } }).nativeMediaFixture;
 
 export default class Hls {
+  static DefaultConfig = { loader: class {} };
   static version = "fixture";
   static Events = Object.fromEntries(["MEDIA_ATTACHED", "MANIFEST_PARSED", "FRAG_LOADING", "FRAG_LOADED", "FRAG_BUFFERED", "FRAG_LOAD_EMERGENCY_ABORTED", "ERROR", "DESTROYING"].map(name => [name, name]));
   static ErrorDetails = {};

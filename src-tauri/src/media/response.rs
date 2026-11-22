@@ -99,23 +99,27 @@ pub(super) fn apply_byte_range(mut response: Response<Vec<u8>>, range: Option<&s
     response
 }
 
+pub(super) fn is_playlist(ctype: Option<&str>, bytes: &[u8]) -> bool {
+    ctype.is_some_and(|t| t.to_ascii_lowercase().contains("mpegurl"))
+        || bytes.starts_with(b"#EXTM3U")
+        || bytes.starts_with(b"\xef\xbb\xbf#EXTM3U")
+}
+
 /// 主清单的子清单也经 /seg 返回：必须继续改写，不能把内层 URL 原样交给播放器。
 pub(super) fn segment_response(
     target: &str,
     ctype: Option<&str>,
     bytes: Vec<u8>,
     origin: &str,
+    refresh: bool,
 ) -> Response<Vec<u8>> {
-    let playlist = ctype.is_some_and(|t| t.to_ascii_lowercase().contains("mpegurl"))
-        || bytes.starts_with(b"#EXTM3U")
-        || bytes.starts_with(b"\xef\xbb\xbf#EXTM3U");
-    if playlist {
+    if is_playlist(ctype, &bytes) {
         return match std::str::from_utf8(&bytes) {
             Ok(text) => respond(
                 200,
                 "application/vnd.apple.mpegurl",
-                rewrite_playlist(target, text, origin).into_bytes(),
-                PROXIED_MEDIA_CACHE_CONTROL,
+                rewrite_playlist(target, text, origin, refresh).into_bytes(),
+                if refresh { "no-store" } else { PROXIED_MEDIA_CACHE_CONTROL },
             ),
             Err(_) => respond(
                 502,
@@ -143,7 +147,7 @@ pub(crate) fn fixture_response(
     origin: &str,
     range: Option<&str>,
 ) -> Response<Vec<u8>> {
-    apply_byte_range(segment_response(target, Some(ctype), bytes.to_vec(), origin), range)
+    apply_byte_range(segment_response(target, Some(ctype), bytes.to_vec(), origin, false), range)
 }
 
 #[cfg(test)]
@@ -218,7 +222,7 @@ mod tests {
             "https://cdn.example/master.m3u8",
             Some("application/octet-stream"),
             text.as_bytes().to_vec(),
-            LOCAL_ORIGIN,
+            LOCAL_ORIGIN, false,
         );
         let body = std::str::from_utf8(response.body()).unwrap();
         assert_eq!(body.matches(&format!("{LOCAL_ORIGIN}/seg?u=")).count(), 4);
@@ -239,14 +243,14 @@ mod tests {
             .headers()
             .contains_key("Access-Control-Allow-Origin"));
         let optional = rewrite_playlist("https://cdn.example/list.m3u8",
-            "#EXTM3U\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"https://other.example/list.json\"\n#EXT-X-DATERANGE:ID=\"ad\",X-ASSET-LIST=\"http://127.0.0.1/assets\"\nsegment.ts\n", LOCAL_ORIGIN);
+            "#EXTM3U\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"https://other.example/list.json\"\n#EXT-X-DATERANGE:ID=\"ad\",X-ASSET-LIST=\"http://127.0.0.1/assets\"\nsegment.ts\n", LOCAL_ORIGIN, false);
         assert!(!optional.contains("CONTENT-STEERING") && !optional.contains("X-ASSET-LIST"));
         assert!(optional.contains("#EXT-X-DATERANGE:ID=\"ad\""));
         let bom = segment_response(
             "https://cdn.example/list.m3u8",
             None,
             b"\xef\xbb\xbf#EXTM3U\nsegment.ts\n".to_vec(),
-            LOCAL_ORIGIN,
+            LOCAL_ORIGIN, false,
         );
         assert!(bom.body().starts_with(b"#EXTM3U\n"));
     }
@@ -257,7 +261,7 @@ mod tests {
             "https://cdn.example/seg-1.ts",
             Some("video/mp2t"),
             b"segment-bytes".to_vec(),
-            LOCAL_ORIGIN,
+            LOCAL_ORIGIN, false,
         );
         assert_eq!(
             segment.headers()["Cache-Control"],
@@ -267,7 +271,7 @@ mod tests {
             "https://cdn.example/list.m3u8",
             None,
             b"#EXTM3U\nseg-1.ts\n".to_vec(),
-            LOCAL_ORIGIN,
+            LOCAL_ORIGIN, false,
         );
         assert_eq!(
             playlist.headers()["Cache-Control"],

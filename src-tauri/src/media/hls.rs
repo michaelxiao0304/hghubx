@@ -67,36 +67,38 @@ fn map_uri_attributes(line: &str, mut rewrite: impl FnMut(&str) -> String) -> St
     format!("{tag}:{}", mapped.join(","))
 }
 
-fn rewrite_uri_attr(line: &str, prefix: &str) -> String {
-    map_uri_attributes(line, |uri| format!("{prefix}/seg?u={}", enc(uri)))
-}
-
 /// 取 m3u8 并把 key / 分片地址改写到本地协议。
-pub async fn load_playlist(url: &str, prefix: &str) -> Result<Arc<String>, String> {
+pub async fn load_playlist(url: &str, prefix: &str, refresh: bool) -> Result<Arc<String>, String> {
     // 缓存 key 要带请求作用域与 prefix：同一份 m3u8 在不同 scheme 或配置代次下不混用
     let req_scope = crate::net::request_scope();
     let generation = PL_CACHE_GENERATION.load(Ordering::Acquire);
     let cache_key = format!("{}:{}:{generation}:{prefix}|{url}", u8::from(req_scope.strict), req_scope.generation);
-    if let Some(hit) = PL_CACHE.lock().unwrap().get(&cache_key).cloned() { return Ok(hit); }
+    if !refresh {
+        if let Some(hit) = PL_CACHE.lock().unwrap().get(&cache_key).cloned() { return Ok(hit); }
+    }
     let (final_url, _, bytes) = fetch_bytes_with_url(url).await?;
     let text = std::str::from_utf8(&bytes).map_err(|_| "播放列表不是 UTF-8 文本")?;
     if !text.trim_start_matches('\u{feff}').starts_with("#EXTM3U") {
         return Err("响应不是 HLS 播放列表".into());
     }
-    let arc = Arc::new(rewrite_playlist(&final_url, text, prefix));
+    let arc = Arc::new(rewrite_playlist(&final_url, text, prefix, false));
     let mut cache = PL_CACHE.lock().unwrap();
     // clear_caches advances the epoch first; never let an older in-flight
     // playlist repopulate the cache after that clear.
     if PL_CACHE_GENERATION.load(Ordering::Acquire) == generation && crate::net::request_scope() == req_scope {
-        if cache.len() >= PL_CACHE_MAX {
+        if !cache.contains_key(&cache_key) && cache.len() >= PL_CACHE_MAX {
             if let Some(key) = cache.keys().next().cloned() { cache.remove(&key); }
         }
-        cache.insert(cache_key, arc.clone());
+        if refresh { cache.insert(cache_key, arc.clone()); }
+        else { cache.entry(cache_key).or_insert_with(|| arc.clone()); }
     }
-    Ok(arc)
+    drop(cache);
+    Ok(if refresh { Arc::new(rewrite_playlist(&final_url, text, prefix, true)) } else { arc })
 }
 
-pub(super) fn rewrite_playlist(url: &str, text: &str, prefix: &str) -> String {
+pub(super) fn rewrite_playlist(url: &str, text: &str, prefix: &str, refresh: bool) -> String {
+    let route = if refresh { "seg?refresh=1&u=" } else { "seg?u=" };
+    let local_uri = |uri: &str| format!("{prefix}/{route}{}", enc(&absolutize(url, uri)));
     let mut out = String::with_capacity(text.len() + 512);
     for raw in text.trim_start_matches('\u{feff}').lines() {
         let line = raw.trim_end();
@@ -129,23 +131,17 @@ pub(super) fn rewrite_playlist(url: &str, text: &str, prefix: &str) -> String {
             }
             if line.to_ascii_uppercase().contains("URI") && line.contains('"') {
                 // KEY/MAP/MEDIA/SESSION-KEY/PART/PRELOAD-HINT 等 URI 都必须经过目标检查。
-                let absolute = absolutize_uri_in_attr(url, line);
-                out.push_str(&rewrite_uri_attr(&absolute, prefix));
+                out.push_str(&map_uri_attributes(line, local_uri));
             } else {
                 out.push_str(line);
             }
         } else {
-            let absolute = absolutize(url, line);
-            out.push_str(&format!("{prefix}/seg?u={}", enc(&absolute)));
+            out.push_str(&local_uri(line));
         }
         out.push('\n');
     }
 
     out
-}
-
-fn absolutize_uri_in_attr(base: &str, line: &str) -> String {
-    map_uri_attributes(line, |uri| absolutize(base, uri))
 }
 
 pub(super) fn clear_cache() {
@@ -163,7 +159,7 @@ mod tests {
     #[test]
     fn dateranges_keep_timing_and_scte_metadata_but_drop_external_resources() {
         let line = "#EXTM3U\n#EXT-X-DATERANGE:ID=\"event\",START-DATE=\"2026-11-07T00:00:00Z\",DURATION=4,SCTE35-OUT=0xFC,X-TEXT=\"a,b\",X-ASSET-URI=\"https://evil.example/ad\",X-ASSET-LIST=\"https://evil.example/list.json\"\n";
-        let out = rewrite_playlist("https://cdn.example/master.m3u8", line, LOCAL_ORIGIN);
+        let out = rewrite_playlist("https://cdn.example/master.m3u8", line, LOCAL_ORIGIN, false);
         assert!(out.contains("DURATION=4,SCTE35-OUT=0xFC,X-TEXT=\"a,b\""));
         assert!(out.contains("START-DATE="));
         assert!(!out.contains("evil.example") && !out.contains("X-ASSET"));
@@ -172,8 +168,7 @@ mod tests {
     #[test]
     fn every_uri_attribute_is_rewritten_without_splitting_quoted_commas() {
         let line = "#EXT-X-MEDIA:NAME=\"audio,main\",URI=\"first.m3u8\",URI=\"second.m3u8\"";
-        let absolute = absolutize_uri_in_attr("https://cdn.example/master.m3u8", line);
-        let rewritten = rewrite_uri_attr(&absolute, LOCAL_ORIGIN);
+        let rewritten = rewrite_playlist("https://cdn.example/master.m3u8", line, LOCAL_ORIGIN, false);
         assert_eq!(
             rewritten.matches(&format!("{LOCAL_ORIGIN}/seg?u=")).count(),
             2
@@ -188,7 +183,7 @@ mod tests {
     fn playlist_rewrite_works() {
         let base = "https://cdn.example/videos5/abc/abc.m3u8?auth_key=9999999999-0-0-deadbeef&v=3&via=hgdj";
         let text = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin?auth_key=9999999999-0-0-deadbeef\"\n#EXTINF:4,\nseg-1.ts?auth_key=9999999999-0-0-deadbeef\n";
-        let body = rewrite_playlist(base, text, LOCAL_ORIGIN);
+        let body = rewrite_playlist(base, text, LOCAL_ORIGIN, false);
 
         assert!(body.contains("#EXTM3U"), "not a playlist: {body}");
         assert!(
