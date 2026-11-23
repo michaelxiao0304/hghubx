@@ -5,7 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { invoke } from "@tauri-apps/api/core";
 import { api, cover, isMobile, logLine } from "../../shared/api/api";
 import type { Detail, Episode, PlayInfo, Post, VideoCard } from "../../shared/api/types";
-import { useStore } from "../../shared/model/store";
+import { useStore, useStickyToast } from "../../shared/model/store";
 import { Img, registerRotatedToastHost } from "../../shared/ui/ui";
 import { registerOverlayBack } from "../../shared/lib/back";
 import { PlaybackLock, VideoSurface, createPlaybackClock, type VideoHandle } from "../playback";
@@ -317,6 +317,8 @@ export default function Feed({
     episodesLength: episodes.length, effectiveLength: effectiveVideoIds.length, go,
     duration, playUrl, playKey, setPanel, setTagMenu, toast, episodeToast: showEpisodeToast,
   });
+  const pauseEpisodeHintVisible = !isDesktop && fs && active && kind === "video" && paused && !err && !scrub && barPct === null && !controlsLocked && episodes.length > 1;
+  useStickyToast(pauseEpisodeHintVisible, tr("第 {0}集{1}", curEp, ` / ${episodes.length}`), "playback-hint", "info");
   useEffect(() => { setBarScrubbing(barPct !== null || scrub !== null); }, [barPct, scrub]);
 
   const {
@@ -577,7 +579,7 @@ export default function Feed({
       onPointerMove={() => { if (isDesktop) wake(); }}>
       <div className="absolute inset-0" inert={controlsLocked}>
         {/* 氛围背景 */}
-        {!isDesktop && posterUrl && (
+        {active && !isDesktop && posterUrl && (
           <div className="absolute inset-0 scale-110 blur-3xl opacity-25 pointer-events-none">
             <Image src={posterUrl} alt="" className="w-full h-full object-cover" />
           </div>

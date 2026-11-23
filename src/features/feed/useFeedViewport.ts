@@ -134,7 +134,7 @@ export function useFeedViewport({
     });
     observer.observe(box);
     return () => { observer.disconnect(); window.clearTimeout(swipeTimer.current); };
-  }, [effectiveVideoIds, index, position.id, position.index, allowed, alignScroll]);
+  }, [effectiveVideoIds, index, position.id, position.index, allowed, active, alignScroll]);
 
   const resolveSwipe = useCallback((target: number) => {
     const prev = idxRef.current;

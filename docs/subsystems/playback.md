@@ -58,7 +58,11 @@
    `ERROR` 只把 fatal network/media 交给 `createHlsRecovery`。
 4. `usePlaybackActivity` 在页面失活时暂停并 `stopLoad()`（处于画中画 `pictureInPictureElement`
    时保持播放，退出画中画且页面仍失活时再暂停），在重新激活时按 `wanted` 与 `startPosition`
-   恢复；`play()` 的 Promise 返回后会再次检查页面是否仍激活。
+   恢复；`play()` 的 Promise 返回后会再次检查页面是否仍激活。被页面栈覆盖的底层播放页（经
+   [`src/shared/model/pageVisibility.ts`](../../src/shared/model/pageVisibility.ts) 的 `PageCoveredContext` 感知，
+   且未处于画中画时），`VideoSurface` 通过 `useProxyPlaybackRecovery.stash()` 暂存当前进度、倍速与播放/暂停意图后
+   销毁 `hls.js` 并清空 `<video>` 源以释放硬件解码器，返回顶层时按暂存状态自动续播或保持暂停；非活跃态同时卸载
+   `AmbientGlow` 与移动端 `blur-3xl` 氛围模糊层（#240）。
 5. seek 有两种入口：桌面 `useSeekInput`/`PlayerControls`，移动端
    `useSeekInput`/进度条手势。指针移动只预览，松手提交一次；
    `VideoSurface.seek` 把目标夹到 `duration - 0.15`（避免 iOS 片尾卡死），
@@ -95,7 +99,7 @@
   以减少对画面的遮盖；文字和图标保持原有颜色与可点击范围。此样式不应用到清屏、全屏控制条或其他页面。
 - 控件闲置隐藏（`src/features/feed/fsIdle.ts`）：桌面 2.8s（键盘聚焦控件时不隐藏）；
   移动沉浸全屏按设置 `fsIdleSecs`（`hghubx_app_v1` 内，0/3/5/10 秒，默认 3，0=不自动隐藏），
-  单击画面切换显隐、双击仍是暂停/播放；暂停时不隐藏。桌面与内嵌全屏统一经
+  单击画面切换显隐、双击仍是暂停/播放；暂停时屏幕中心显示播放图标，同时在同一 `playback-hint` toast 槽展示「第 X 集 / Y」，卡片随暂停图标同步显示，恢复播放、退出全屏、拖动预览、屏幕锁定或播放出错时同步收起；该卡片使用无 TTL 的 sticky 提示，不会在 2.2 秒后自行消失。桌面与内嵌全屏统一经
   `src/shared/lib/fullscreen.ts` 兼容标准与 `webkit` 前缀 Fullscreen API，不支持或被拒绝时
   回退至应用内全屏并同步 Tauri 窗口全屏。桌面闲置隐藏（`.player-root.is-idle`）同时淡出
   控制条、社交栏、左下信息、上下切换按钮与上下文页左上角标题栏（`.desktop-context-header`），

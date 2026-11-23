@@ -13,6 +13,7 @@ import { useSearchResults } from "./useSearchResults";
 import { SearchTags } from "./SearchTags";
 import { SearchHistory } from "./SearchHistory";
 import { useRankSwipe } from "./useRankSwipe";
+import { useTabSwipe } from "../../shared/ui/hooks/useTabSwipe";
 import { IBack, IChevR, IClose, IFireF, IPlayF, IRefresh, ISearch, ITrophy } from "../../shared/ui/icons";
 import { tr, N_ } from "../../shared/i18n";
 
@@ -31,6 +32,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const resetSearchRef = useRef<(focus?: boolean) => void>(() => {});
   const [hotVideos, setHotVideos] = useState<HotSearchVideo[]>([]);
   const [hotLoading, setHotLoading] = useState(false);
   const [hotError, setHotError] = useState<string | null>(null);
@@ -46,6 +48,11 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
   const hotLoadedAt = useRef(0);
   const aliveRef = useRef(true);
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
+  useEffect(() => {
+    const reset = () => resetSearchRef.current(false);
+    window.addEventListener("hg:search-reset", reset);
+    return () => window.removeEventListener("hg:search-reset", reset);
+  }, []);
 
   /* 移动端进入搜索页不自动聚焦：iOS 会立刻弹键盘遮住内容（#20）。
      桌面端没有软键盘，聚焦便于直接打字。 */
@@ -103,7 +110,24 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
     results.search(k, tab);
   };
 
+  const resetSearch = (focus = true) => {
+    results.clear();
+    setQ("");
+    setSubmitted("");
+    setTab("video");
+    if (focus) inputRef.current?.focus();
+    else inputRef.current?.blur();
+    scrollRef.current?.scrollTo({ top: 0 });
+  };
+  resetSearchRef.current = resetSearch;
+
   const querying = submitted.length > 0;
+  const tabSwipe = useTabSwipe<HTMLDivElement>({
+    rootRef: scrollRef,
+    tabIndex: querying && tab === "post" ? 1 : 0,
+    tabCount: querying ? 2 : 1,
+    onTabChange: index => changeTab(index === 0 ? "video" : "post"),
+  });
   const currentHotTags = hotTagState.epoch === lineEpoch ? hotTagState.tags : {};
   const currentHotFailed = hotTagState.epoch === lineEpoch ? hotTagState.failed : [];
   const hotFailedSet = new Set(currentHotFailed);
@@ -196,7 +220,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
             }}
             placeholder={tr("搜索短剧、帖子、题材…")}
             className="flex-1 min-w-0 bg-transparent text-[14px] text-on placeholder-dim outline-none" />
-          {(q || submitted) && <Button aria-label={tr("清空搜索")} type="button" onClick={() => { results.clear(); setQ(""); setSubmitted(""); inputRef.current?.focus(); }} className="ios-icon-button ios-search-clear"><IClose size={16} /></Button>}
+          {(q || submitted) && <Button aria-label={tr("清空搜索")} type="button" onClick={() => resetSearch()} className="ios-icon-button ios-search-clear"><IClose size={16} /></Button>}
         </Form>
         <Button onClick={() => push({ kind: "ranks" })} aria-label={tr("排行榜")}
           variant="primary" className="ios-icon-button ios-search-shortcut">
@@ -204,7 +228,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
         </Button>
       </div>
 
-      <div ref={scrollRef} className="flex-1 scroll-y pb-24">
+      <div ref={scrollRef} {...tabSwipe} style={{ touchAction: "pan-y" }} className="flex-1 scroll-y pb-24">
         {!querying ? (
           <>
             <Surface role="region" aria-label={tr("热搜榜")} className="mt-1 rounded-(--r-md) bg-s2 p-3.5 a-rise">

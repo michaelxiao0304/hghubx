@@ -112,12 +112,13 @@ pub async fn api_category(
     if let Ok(value) = crate::channel_page::fetch_category(&cate, page, size, sort.as_deref()).await {
         return Ok(value);
     }
-    let sort = sort_query(sort.as_deref());
-    state
-        .get(&format!(
-            "/api/videos/category/{cate}?page={page}&size={size}{sort}"
-        ))
-        .await
+    let sort = sort_query(sort.as_deref().map(str::trim));
+    let path = match cate.as_str() {
+        "newest" => format!("/api/videos?page={page}&size={size}&sort=new"),
+        "recommend" => format!("/api/videos?page={page}&size={size}&sort=hot"),
+        _ => format!("/api/videos/category/{cate}?page={page}&size={size}{sort}"),
+    };
+    state.get(&path).await
 }
 
 #[tauri::command]
@@ -196,7 +197,7 @@ pub async fn api_post_categories(state: State<'_, Api>) -> Result<Value, String>
     state.get("/api/site/categories/post").await
 }
 
-/// 按分类取吃瓜帖：`/api/posts/category/{route}`；`sort=latest` 走最新排序。
+/// 按分类取吃瓜帖：`remen-chigua` 最新口径优先同步官网 SSR `/blog/gossip/`，其余走 `/api/posts/category/{route}`。
 #[tauri::command]
 pub async fn api_post_category(
     state: State<'_, Api>,
@@ -205,13 +206,14 @@ pub async fn api_post_category(
     size: u32,
     sort: Option<String>,
 ) -> Result<Value, String> {
+    if route == "remen-chigua" && matches!(sort.as_deref().map(str::trim), Some("latest") | Some("new")) {
+        if let Ok(posts) = crate::channel_page::fetch_gossip_posts(page, size).await {
+            return Ok(posts);
+        }
+    }
     let encoded: String = url::form_urlencoded::byte_serialize(route.as_bytes()).collect();
-    let sort = sort_query(sort.as_deref());
-    state
-        .get(&format!(
-            "/api/posts/category/{encoded}?page={page}&size={size}{sort}"
-        ))
-        .await
+    let sort = sort_query(sort.as_deref().map(str::trim));
+    state.get(&format!("/api/posts/category/{encoded}?page={page}&size={size}{sort}")).await
 }
 
 /// 相关推荐：`/api/videos/{id}/related` 返回 data.items。

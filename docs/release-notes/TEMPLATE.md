@@ -12,7 +12,7 @@
 - 各平台产物与安装方式；升级/覆盖安装的数据保留行为；已知限制。
 
 ## 致谢
-- 贡献者/反馈者用裸 `@username`（勿加反引号，GitHub Release 才会自动展示 Contributors 头像栏；无内容时整段删除）。
+- 仅代码贡献者用裸 `@username`（勿加反引号，GitHub Release 会据此展示 Contributors 头像栏）；仅提 issue 的反馈者用反引号 `` `username` ``（不带 `@`），避免误入 Contributors；无内容时整段删除。
 
 ## 验证
 - 各平台 CI job 结果与 run id；实机/浏览器回归结论。

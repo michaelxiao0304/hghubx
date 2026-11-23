@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useImperativeHandle, useRef, forwardRef, useState, type MutableRefObject } from "react";
+import { useContext, useEffect, useLayoutEffect, useImperativeHandle, useRef, forwardRef, useState, type MutableRefObject } from "react";
 import Hls from "hls.js";
 import { platform } from "../../shared/api/api";
+import { PageCoveredContext } from "../../shared/model/pageVisibility";
 import { connectNativeMedia, playbackSource } from "./mediaTransport";
 import { hlsErrorMessage, mediaErrorMessage } from "./mediaErrors";
 import { usePlaybackWatchdog } from "./usePlaybackWatchdog";
@@ -80,12 +81,30 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   const measurementRef = useRef({ key: measurementKey, onSize });
   measurementRef.current = { key: measurementKey, onSize };
   const [ready, setReady] = useState(false);
+  const pageCovered = useContext(PageCoveredContext);
+  const [inPip, setInPip] = useState(false);
+  const suspended = pageCovered && !inPip;
+  const suspendedRef = useRef(suspended);
+  suspendedRef.current = suspended;
   const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { ...diagnosticContext, active, resource: mediaResource(src) });
   const activity = usePlaybackActivity(videoRef, hlsRef, { active, autoPlay, src, trace });
   const proxyRecovery = useProxyPlaybackRecovery(videoRef, src, activity, trace);
   const watchdog = usePlaybackWatchdog(videoRef, hlsRef, src, activity, proxyRecovery,
     message => { recoveryRef.current?.dispose(); onError?.(message); }, trace);
   useEffect(() => { onLoadingStatus?.(watchdog.status); }, [watchdog.status, onLoadingStatus]);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const syncPip = () => setInPip(document.pictureInPictureElement === v);
+    v.addEventListener("enterpictureinpicture", syncPip);
+    v.addEventListener("leavepictureinpicture", syncPip);
+    syncPip();
+    return () => {
+      v.removeEventListener("enterpictureinpicture", syncPip);
+      v.removeEventListener("leavepictureinpicture", syncPip);
+    };
+  }, []);
 
   const reportSize = (v: HTMLVideoElement | null) => {
     if (!v || v !== videoRef.current || attachedSource.current !== latestSource.current || v.readyState < 1) return;
@@ -150,7 +169,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !src) return;
+    if (!video || !src || suspended) return;
     onClearError?.();
     attachedSource.current = null;
     setReady(false);
@@ -235,15 +254,23 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     }
 
     return () => {
+      const releasingCovered = suspendedRef.current && latestSource.current === src;
+      if (releasingCovered) proxyRecovery.stash("page_covered");
       attachedSource.current = null;
       disconnectNative?.();
       video.removeEventListener("resize", onVideoResize);
       recoveryRef.current?.dispose(); recoveryRef.current = null;
-      trace("source.cleanup");
+      trace("source.cleanup", releasingCovered ? { suspended: true } : undefined);
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      if (releasingCovered) {
+        // Release Chromium/Android WebView MediaCodec & SurfaceTexture while covered by a stack page.
+        video.srcObject = null;
+        video.removeAttribute("src");
+        video.load();
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, proxyRecovery.revision]);
+  }, [src, proxyRecovery.revision, suspended]);
 
   useLayoutEffect(() => { recoveryRef.current?.activityChanged(); }, [active]);
 
@@ -264,7 +291,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   };
 
   const handleVideoError = () => {
-    if (hlsRef.current) return;
+    if (hlsRef.current || suspendedRef.current) return;
     const error = videoRef.current?.error ?? null;
     if (error?.code === 2) watchdog.networkError();
     else watchdog.fail(mediaErrorMessage(error));
@@ -272,7 +299,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
 
   return (
     <div className="relative isolate h-full w-full">
-      {ambientGlow && <AmbientGlow videoRef={videoRef} active={active} />}
+      {ambientGlow && active && <AmbientGlow videoRef={videoRef} active={active} />}
       <video
         ref={(node) => {
           videoRef.current = node;
