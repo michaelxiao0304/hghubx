@@ -1,4 +1,4 @@
-export function installFixture({ theme, titles, accountData = false, metrics = [], metricPages = 1, metricPageSize = 2 }) {
+export function installFixture({ theme, titles, accountData = false, metrics = [], metricPages = 1, metricPageSize = 2, tagGroups = null }) {
   // Unrelated UI checks start after onboarding; production acceptance remains user-driven.
   localStorage.setItem("hghubx_usage_agreement", JSON.stringify({
     version: "2026-11-15-v1", accepted: true, acceptedAt: "2026-11-15T00:00:00Z",
@@ -59,7 +59,8 @@ export function installFixture({ theme, titles, accountData = false, metrics = [
       }
       if (command === "api_topics") return paged([topic]);
       if (command === "api_topic") return { topic, videos: paged(cards), related: [] };
-      if (command === "api_tags") return { categories: [{ name: "题材", tags: [{ id: 1, name: "都市", slug: "city" }] }] };
+      if (command === "api_tags") return { categories: tagGroups ?? [{ name: "题材", tags: [{ id: 1, name: "都市", slug: "city" }] }] };
+      if (command === "api_hot_tags") return { items: [{ name: "都市", slug: "dushi" }] };
       if (command === "api_rank") return paged(cards.map((card, index) => ({ ...card, rank: index + 1, video_id: card.id, metric_value: card.hot, metric_label: "热度" })));
       if (command === "api_search_hot") return paged(titles.map((title, index) => ({ video_id: index + 1, title, plays: `${550 - index * 10}.1w播放量` })));
       if (command === "api_video") return { ...cards[(args.id - 1) % cards.length], counts: { collect: 900, comment: 20, hot: 286000, like: 1800 }, episodes: [] };

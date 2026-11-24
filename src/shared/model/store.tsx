@@ -183,9 +183,9 @@ type Store = {
   tab: Tab; setTab: (t: Tab) => void;
   stack: Page[]; push: (p: PageInput) => void; openRootPage: (p: PageInput) => void; pop: () => void;
   user: User | null; authExpired: boolean; setUser: (u: User | null, origin?: string) => void;
-  accountScope: string; accountSync: { busy: boolean; error: string; lastSynced: number; favoritesKnown: boolean };
+  accountScope: string; accountSync: { busy: boolean; error: string; authError: boolean; lastSynced: number; favoritesKnown: boolean };
   accountGeneration: () => number;
-  syncAccount: () => Promise<void>;
+  syncAccount: (options?: { manual?: boolean }) => Promise<void>;
   setCollected: (kind: "video" | "post", id: number, on: boolean, knownEpisodes?: number) => Promise<void>;
   setLiked: (kind: "video" | "post", id: number, ep: number, on: boolean) => Promise<void>;
   setFollowing: (id: number, on: boolean) => Promise<void>;

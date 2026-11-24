@@ -21,6 +21,16 @@ pub fn rebase_trust(origin: &str) -> bool {
     crate::lines::is_fixed(origin) || crate::lines::is_trusted_mirror(origin)
 }
 
+/// Verify cross-line trust for automatic re-login, refreshing published mirror
+/// trust on demand when a saved or current mirror origin is not yet cached.
+pub async fn verify_relogin_origins(saved: &str, expected: &str) -> Result<(), String> {
+    if saved == expected {
+        return Ok(());
+    }
+    crate::lines::verify_published_origin(saved).await?;
+    crate::lines::verify_published_origin(expected).await
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Session {
     // 旧版本没有 origin：不能推断其 token 属于哪个镜像，升级后必须重新登录。

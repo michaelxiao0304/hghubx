@@ -6,6 +6,7 @@ import { accountKey, mergeRebasedAccounts } from "../storage/accountRebase";
 import { favoriteChanges, historyRemovals, syncedFavorites, type FavoriteChanges } from "../storage/libraryChanges";
 import { credentialFor, forgetCredential } from "./sessionCredential";
 import type { WatchProgress } from "./store";
+import { autoLineEnabled, pickLine, waitForPendingLinePick } from "../network/autoLine";
 import { N_, tr } from "../i18n";
 
 type Kind = "video" | "post";
@@ -32,7 +33,7 @@ export type AccountData = GuestData & {
   dirtyHistory: Record<number, { ep: number; at: number }>;
   localHistory: number[];
 };
-type SyncState = { busy: boolean; error: string; lastSynced: number; favoritesKnown: boolean };
+type SyncState = { busy: boolean; error: string; authError: boolean; lastSynced: number; favoritesKnown: boolean };
 const ACCOUNT_KEY = "hghubx_accounts_v1";
 const PENDING_LINE = N_("登录信息已保留，正在等待验证线路。恢复连接后会自动同步。");
 const empty = (): AccountData => ({ likes: [], favs: [], follows: [], history: [], postLikes: [], postFavs: [], dirtyHistory: {}, localHistory: [] });
@@ -107,7 +108,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
         }
       }
     } catch { /* A damaged account cache must not erase legacy guest records. */ }
-    state.current = { user: null, origin: "", key: "guest", generation: 0, authExpired: false, awaitingTrust: false, data: guest.current, sync: { busy: false, error: "", lastSynced: 0, favoritesKnown: false } };
+    state.current = { user: null, origin: "", key: "guest", generation: 0, authExpired: false, awaitingTrust: false, data: guest.current, sync: { busy: false, error: "", authError: false, lastSynced: 0, favoritesKnown: false } };
   }
   const pending = useRef(new Map<string, Promise<void>>());
   const mutation = useRef(0);
@@ -138,7 +139,7 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
       // never clear guest/account storage or move records between the two scopes.
       forgetCredential();
       s.authExpired = true;
-      s.sync = { ...s.sync, busy: false, error: AUTH_EXPIRED_MESSAGE };
+      s.sync = { ...s.sync, busy: false, authError: true, error: AUTH_EXPIRED_MESSAGE };
       window.clearTimeout(flushTimer.current); flushTimer.current = undefined;
       window.clearTimeout(syncTimer.current);
       pending.current.clear(); needsResync.current = false;
@@ -219,8 +220,9 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     }
     throw new Error(tr("账号历史分页过多，请稍后重试"));
   };
+  const lineRecovered = useRef(false);
   const syncRef = useRef<() => Promise<void>>(async () => {});
-  const syncAccount = useCallback(async () => {
+  const syncAccount = useCallback(async (options?: { manual?: boolean }) => {
     const s = state.current!;
     if (!s.user) return;
     if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
@@ -228,51 +230,75 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     if (synchronizing.current?.generation === generation) return synchronizing.current.promise;
     if (clearing.current === generation) return;
     const auth = identity();
-    s.sync = { ...s.sync, busy: true, error: "" }; render();
+    s.sync = { ...s.sync, busy: true, error: "", authError: false }; render();
     const startMutation = mutation.current;
     const startClear = clearVersion.current;
     const startHistory = new Map(s.data.history.map(row => [row.id, row]));
     const run = (async () => {
+      if (options?.manual) {
+        lineRecovered.current = false;
+        await api.lineHealth(true).catch(() => {});
+        if (!canSync(generation)) return;
+      }
       // Only replay observed playback, never silently upload the guest's library.
       const credential = credentialFor(auth.expectedUserId);
       // Let the account reads verify the session before a queued progress write can return 401.
-      if (credential) uploadsAwaitingAuth.current = generation;
+      uploadsAwaitingAuth.current = generation;
       const expire = captureAuthFailure("api_me", { ...auth });
-      const load = (deferExpiry: boolean) => Promise.allSettled([
-        api.me(auth, deferExpiry),
-        (async () => { await flushHistory(); return readHistory(auth, generation, deferExpiry); })(),
+      const load = () => Promise.allSettled([
+        api.me(auth, true),
+        readHistory(auth, generation, true),
       ] as const);
-      let [profile, remote] = await load(!!credential);
+      const has401 = (results: PromiseSettledResult<unknown>[]) => results.some(result =>
+        result.status === "rejected" && message(result.reason) === AUTH_EXPIRED_MESSAGE);
+      const recoverLine = async () => {
+        if (!lineRecovered.current && autoLineEnabled()) {
+          lineRecovered.current = true;
+          return pickLine("auth-401", true);
+        }
+        return false;
+      };
+      let [profile, remote] = await load();
       if (!isCurrent(generation)) return;
       if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
-      if (credential && [profile, remote].some(result =>
-        result.status === "rejected" && message(result.reason) === AUTH_EXPIRED_MESSAGE)) {
+      if (credential && has401([profile, remote])) {
         try {
           const snapshot = await api.login(credential.username, credential.password, { ...auth, credentialOrigin: credential.origin });
           if (!canSync(generation)) return;
-          if (snapshot.origin !== auth.expectedOrigin || snapshot.user?.id !== auth.expectedUserId) throw new Error("登录身份已变化");
+          if (snapshot.origin !== auth.expectedOrigin || snapshot.user?.id !== auth.expectedUserId) throw new Error(tr("当前线路返回的账号与本地登录不一致，请手动重新登录"));
         } catch (error) {
           if (!isCurrent(generation)) return;
           if (error instanceof TransientRequestError && !s.authExpired) {
+            if (await recoverLine() || !canSync(generation)) return;
             s.sync = { ...s.sync, busy: false, error: tr("账号同步暂时中断，登录信息已保留。恢复连接后可重试。") };
             render();
             throw error;
           }
           expire?.();
+          const mismatch = tr("当前线路返回的账号与本地登录不一致，请手动重新登录");
+          s.sync = { ...s.sync, error: message(error) === mismatch ? mismatch : tr("自动重新登录失败，请重新登录") };
+          render();
           throw new Error(AUTH_EXPIRED_MESSAGE);
         }
-        uploadsAwaitingAuth.current = null;
-        [profile, remote] = await load(false);
+        [profile, remote] = await load();
         if (!isCurrent(generation)) return;
         if (s.authExpired) throw new Error(AUTH_EXPIRED_MESSAGE);
+      }
+      if (has401([profile, remote])) {
+        if (await recoverLine() || !canSync(generation)) return;
+        expire?.();
+        throw new Error(AUTH_EXPIRED_MESSAGE);
       }
       let current = state.current!.data;
       let favoritesKnown = state.current!.sync.favoritesKnown;
       const errors: string[] = [];
+      let authError = false;
       if (profile.status === "fulfilled") {
         const snapshot = profile.value;
-        if (snapshot?.origin !== auth.expectedOrigin || snapshot.user?.id !== auth.expectedUserId) errors.push(tr("账号资料身份不匹配，请重新登录"));
-        else {
+        if (snapshot?.origin !== auth.expectedOrigin || snapshot.user?.id !== auth.expectedUserId) {
+          errors.push(tr("账号资料身份不匹配，请重新登录"));
+          authError = true;
+        } else {
           if (uploadsAwaitingAuth.current === generation) {
             uploadsAwaitingAuth.current = null;
             if (Object.keys(current.dirtyHistory).length) scheduleUpload(generation);
@@ -306,9 +332,10 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
       } else if (remote.status === "rejected") errors.push(message(remote.reason));
       persist(current);
       if (storageError.current) errors.push(storageError.current);
-      state.current!.sync = { busy: false, error: errors.join("；"), lastSynced: errors.length ? s.sync.lastSynced : Date.now(), favoritesKnown };
+      const error = [...new Set(errors)].join("；");
+      state.current!.sync = { busy: false, error, authError, lastSynced: error ? s.sync.lastSynced : Date.now(), favoritesKnown };
       render();
-      if (errors.length) throw new Error(errors.join("；"));
+      if (error) throw new Error(error);
     })();
     synchronizing.current = { generation, promise: run };
     try { await run; } finally {
@@ -321,9 +348,9 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     }
   }, []);
   syncRef.current = syncAccount;
-  const retrySync = useCallback(async () => {
+  const retrySync = useCallback(async (options?: { manual?: boolean }) => {
     if (state.current!.awaitingTrust) window.dispatchEvent(new Event("hg:session-retry"));
-    else await syncAccount();
+    else await syncAccount(options);
   }, [syncAccount]);
   const switchSession = useCallback((user: User | null, origin?: string, restored = false, awaitingTrust = false, libraryOrigin?: string | null) => {
     const s = state.current!;
@@ -355,9 +382,10 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
     if (!next || !credentialFor(next.id)) forgetCredential();
     s.user = next; s.origin = nextOrigin; s.key = key;
     s.authExpired = expired;
+    if (!sameAccount) lineRecovered.current = false;
     s.awaitingTrust = awaitingTrust;
     s.data = next ? accounts.current[accountKey(aliases.current, key)] || applyInteractions(empty(), next.interactions) : guest.current;
-    s.sync = { busy: false, error: storageError.current || (expired ? AUTH_EXPIRED_MESSAGE : awaitingTrust ? PENDING_LINE : ""), lastSynced: 0, favoritesKnown: false };
+    s.sync = { busy: false, authError: expired, error: storageError.current || (expired ? AUTH_EXPIRED_MESSAGE : awaitingTrust ? PENDING_LINE : ""), lastSynced: 0, favoritesKnown: false };
     sentHistory.current.clear(); pending.current.clear(); needsResync.current = false;
     render();
     if (next && !expired && !awaitingTrust) void syncRef.current().catch(() => {});
@@ -551,12 +579,20 @@ export function useAccountData(initialGuest: GuestData, saveGuest: (data: GuestD
   }, []);
   useEffect(() => {
     mounted.current = true;
-    const refresh = () => { if (document.visibilityState !== "hidden") void syncRef.current().catch(() => {}); };
-    const onReconnect = () => {
+    const refresh = async () => {
+      if (document.visibilityState === "hidden") return;
+      await Promise.resolve();
+      await waitForPendingLinePick();
+      if (mounted.current && document.visibilityState === "visible") await syncRef.current().catch(() => {});
+    };
+    const onReconnect = async () => {
+      lineRecovered.current = false;
+      if (document.visibilityState === "hidden") return;
       const active = synchronizing.current;
-      if (!active) { refresh(); return; }
-      // An online event can precede the timeout of a request sent on the old network.
-      void active.promise.catch(() => { if (canSync(active.generation)) refresh(); });
+      if (!autoLineEnabled()) await api.lineHealth(true).catch(() => {});
+      if (!active) { await refresh(); return; }
+      // A request on the old network may time out after the online event.
+      await active.promise.catch(() => { if (canSync(active.generation)) return refresh(); });
     };
     window.addEventListener("focus", refresh); window.addEventListener("online", onReconnect); document.addEventListener("visibilitychange", refresh);
     return () => { mounted.current = false; window.clearTimeout(flushTimer.current); window.clearTimeout(syncTimer.current);

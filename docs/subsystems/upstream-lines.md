@@ -80,8 +80,10 @@ origin”，不负责 HTTP 客户端、代理、DNS 固定或媒体字节（见
   `SessionStore::boot_session()` 决定。可信且绑定当前线路的会话可同步；普通线路未完成验证时，前端通过 `pending_session` 展示原账号片库并等待重验。
 - 选择：手动点击 → `line_set`/`line_custom_set` → 校验 → 写临时文件 → rename →
   更新内存 `BASE` → `refresh_client()` → 按来源恢复或隔离会话 → UI 收到 `hg:line-changed`。
-- 自动：`health.ok` → 重置失败计数并延长体检间隔；连续两次不健康 → `auto_pick`；
-  有赢家 → 切换并回到 60 秒；all-down → 保持当前线路并 10 秒后重试。
+- 自动：`lines::health()` 探测前先刷新 HTTP 客户端以丢弃切换网络后的旧连接/DNS/代理缓存；
+  `health.ok` → 重置失败计数并延长体检间隔；连续两次不健康 → `auto_pick`；
+  有赢家 → 切换并回到 60 秒；all-down → 保持当前线路并 10 秒后重试。`online` 事件在前台立即刷新当前线路，后台触发则在回前台时补跑。
+  优先保持健康且已绑定账号的线路。需要换线时跳过冷却，持续失败仍可切换。
 - 取消：`line_cancel` 只增加代次，不修改线路；正在探测的 `line_auto` 返回
   `cancelled=true`，不再落盘。
 - 发布页：首次成功解析 → `remember_published()` 写入进程内可信集合（上限 256）；

@@ -83,8 +83,8 @@
    回退默认 `zh-CN`（不跟随系统语言）；切换到 `zh-TW` 或 `en` 时先按需加载对应词典 chunk，成功后才写
    `localStorage`、同步 `<html lang>` 并触发界面重绘。
 4. 内容偏好存在 `CONTENT_PREFERENCES_KEY`，结构是
-   `{blockedTags, paused, hideUntagged}`。`normalizeTag()` 只做 trim、压缩空白和小写化，
-   不做模糊匹配；最多 200 个标签、单个 64 字符。读取失败/JSON 损坏 → 全空偏好；写入失败 →
+   `{blockedTags, pinnedTags, paused, hideUntagged}`。`normalizeTag()` 只做 trim、压缩空白和小写化，
+   不做模糊匹配；屏蔽标签最多 200 个、置顶标签最多 24 个、单个标签 64 字符。读取失败/JSON 损坏 → 全空偏好；写入失败 →
    本次内存偏好仍生效，同时把 `storageError` 暴露给 `PreferenceStorageNotice`，重启可能回退。
 5. 账号数据按 `[origin, user.id]` 分桶保存在 `ACCOUNT_KEY`，值带 `version:1`。`accountScope`
    是 `${key}:${generation}`，`generation` 在登录/退出/切换账号时递增；所有详情、标签门、
@@ -110,10 +110,14 @@
   失败则仍更新快照并设置 `storageError`；storage 事件只接受本键或 `key=null`。
 - 账号：boot/restoreSession → `setUser()` → generation++ → 读取该 `[origin,id]` 的本地桶 →
   后台同步；失败保留旧数据，`sync.error` 展示错误，下一次 focus/online/visible 重试。
-  同步读取返回 401 且本次运行中已有同账号登录凭据时，由 `api_login` 核对当前会话的 origin、用户 ID 和代次；
-  自动重登只走原线路，或两端均可信且共享账号体系的线路。返回用户 ID 匹配且起始会话仍有效，
-  才提交新 token 并重试资料和历史。网络超时或服务暂时不可用时，保留本次运行的内存凭据和待上传进度，
-  恢复联网、返回前台或手动重试时可再次同步。服务器拒绝凭据时弹出可关闭的重新登录提示。
+  同步收到账号 401 且本次运行中有同账号内存凭据时，由 `api_login` 刷新客户端并通过
+  `session::verify_relogin_origins()` 核对当前会话的 origin、用户 ID 和代次（跨镜像且未缓存信任时
+  按需刷新发布页）；自动重登只走原线路，或两端均可信且共享账号体系的线路。返回用户 ID 匹配且
+  起始会话仍有效，才提交新 token 并重试资料和历史。瞬时网络失败保留凭据且不锁死后续静默重试；
+  若仍为 401 且并非凭据被拒，开启自动选线时尝试静默切线恢复。仅真正不可恢复（密码/身份被拒或无
+  内存凭据）时暂停同步并显示可关闭的登录失效提示，保留本地片库和待上传进度。
+  手动重试会刷新客户端。确认登录失效后，只有成功重新登录才会恢复上传。
+  网络恢复后等待线路检查完成再继续账号同步。
 - 批量取消收藏：开始时捕获 `accountGeneration` 和 `actionRevision`；每项请求前后比较快照。账号代次改变，
   或收到线路/代理变化事件、组件卸载导致修订号递增时，停止队列中尚未发送的项目，不写旧批次反馈。
   `removeHistory()` 自身仍按账号代次与请求身份保护远端删除；外层确认流程只在调用前后校验组件反馈，

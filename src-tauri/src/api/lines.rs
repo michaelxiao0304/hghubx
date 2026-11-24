@@ -175,9 +175,7 @@ pub async fn line_try_main(state: State<'_, Api>) -> Result<Value, String> {
 /// 线路体检：探一次 `/api/videos`，和自动选线用同一个判据。
 #[tauri::command]
 pub async fn line_health(state: State<'_, Api>, refresh_client: Option<bool>) -> Result<Value, String> {
-    if refresh_client.unwrap_or(false) {
-        crate::net::refresh_client();
-    }
+    let _ = refresh_client; // All health probes now refresh the client.
     let mut health = crate::lines::health().await;
     let origin = state.session.stored_origin();
     health["sessionBound"] = json!(origin.is_some() && origin.as_deref() == health["base"].as_str());
