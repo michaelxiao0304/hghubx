@@ -1,15 +1,9 @@
 //! Feed, topics, tags, search, posts and user list commands.
 
 use super::Api;
+use crate::channel_page::{category_json_path, original_json_path, sort_query};
 use serde_json::{json, Value};
 use tauri::State;
-
-fn sort_query(sort: Option<&str>) -> String {
-    match sort {
-        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
-        _ => String::new(),
-    }
-}
 
 /* ───────────────────────── 列表 ───────────────────────── */
 
@@ -29,16 +23,14 @@ pub async fn api_original_videos(
     page: u32,
     size: u32,
     sort: Option<String>,
+    json_only: Option<bool>,
 ) -> Result<Value, String> {
-    if let Ok(value) = crate::channel_page::fetch_original(&cate, page, size).await {
-        return Ok(value);
+    if !json_only.unwrap_or(false) {
+        if let Ok(value) = crate::channel_page::fetch_original(&cate, page, size).await {
+            return Ok(value);
+        }
     }
-    let sort = sort_query(sort.as_deref());
-    let path = if cate == "all" {
-        format!("/api/videos?is_original=1&page={page}&size={size}{sort}")
-    } else {
-        format!("/api/videos/category/{cate}?is_original=1&page={page}&size={size}{sort}")
-    };
+    let path = original_json_path(&cate, page, size, sort.as_deref());
     state.get(&path).await
 }
 
@@ -108,16 +100,14 @@ pub async fn api_category(
     page: u32,
     size: u32,
     sort: Option<String>,
+    json_only: Option<bool>,
 ) -> Result<Value, String> {
-    if let Ok(value) = crate::channel_page::fetch_category(&cate, page, size, sort.as_deref()).await {
-        return Ok(value);
+    if !json_only.unwrap_or(false) {
+        if let Ok(value) = crate::channel_page::fetch_category(&cate, page, size, sort.as_deref()).await {
+            return Ok(value);
+        }
     }
-    let sort = sort_query(sort.as_deref().map(str::trim));
-    let path = match cate.as_str() {
-        "newest" => format!("/api/videos?page={page}&size={size}&sort=new"),
-        "recommend" => format!("/api/videos?page={page}&size={size}&sort=hot"),
-        _ => format!("/api/videos/category/{cate}?page={page}&size={size}{sort}"),
-    };
+    let path = category_json_path(&cate, page, size, sort.as_deref());
     state.get(&path).await
 }
 

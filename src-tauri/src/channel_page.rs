@@ -420,6 +420,33 @@ async fn fetch_html(path: &str) -> Result<String, String> {
     .map_err(|_| "获取官网频道页超时（12 秒）".to_string())?
 }
 
+pub(crate) fn sort_query(sort: Option<&str>) -> String {
+    match sort {
+        Some(s) if !s.trim().is_empty() => format!("&sort={s}"),
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn category_json_path(cate: &str, page: u32, size: u32, sort: Option<&str>) -> String {
+    match cate {
+        "newest" => format!("/api/videos?page={page}&size={size}&sort=new"),
+        "recommend" => format!("/api/videos?page={page}&size={size}&sort=hot"),
+        _ => {
+            let sort = sort_query(sort.map(str::trim));
+            format!("/api/videos/category/{cate}?page={page}&size={size}{sort}")
+        }
+    }
+}
+
+pub(crate) fn original_json_path(cate: &str, page: u32, size: u32, sort: Option<&str>) -> String {
+    let sort = sort_query(sort);
+    if cate == "all" {
+        format!("/api/videos?is_original=1&page={page}&size={size}{sort}")
+    } else {
+        format!("/api/videos/category/{cate}?is_original=1&page={page}&size={size}{sort}")
+    }
+}
+
 fn category_route(cate: &str, page: u32, sort: Option<&str>) -> Option<(String, &'static str)> {
     if !matches!(cate, "ai-duanju" | "ai-manju") {
         return None;
