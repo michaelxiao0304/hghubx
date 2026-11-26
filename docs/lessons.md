@@ -5,6 +5,7 @@
 
 | 日期 | 主题 | 症状 | 根因 | 规则 | 回归测试或来源 |
 | --- | --- | --- | --- | --- | --- |
+| 2026-11-26 | Android TV 启动崩溃（#276） | TV 版启动时遇到重复的文件共享标识 | Tauri 模板使用包名占位符，旧补丁只匹配展开后的标识，又注册了一次 | 在生成的清单中原位替换默认 Provider，并核对重复运行补丁后仍只有一项 | `scripts/patch-android-tv.mjs`、`src-tauri/tv/android/res/xml/hghubx_tv_file_paths.xml` |
 | 2026-11-24 | 标签页指标排序回归 | 标签同时返回短剧和帖子时，排序用例等待默认顺序超时 | 两组卡片共用网格样式，断言把帖子标题也计入了短剧 | 按短剧网格比较排序与连载筛选，并核对帖子仍按原顺序显示 | `scripts/test-metric-sort.mjs`、`scripts/test-tag-status-filter.mjs` |
 | 2026-11-22 | 首片失败后的恢复 | 上游已更新分片地址，重试仍请求失效的首片 | 同一播放地址重建时命中旧主清单或子清单 | 恢复时重新取各层清单，按内容复用已取得的分片和密钥 | `src-tauri/src/media/hls.rs`、`src-tauri/src/media/segment.rs` |
 | 2026-11-22 | 退出后的密钥重试 | 退出加密视频后仍有新请求 | 分片与密钥同时失败时，旧密钥加载器仍按自己的计时器重试 | 让 HLS 控制器统一调度密钥重试，卸载回归要统计卸载后新发起的请求 | `src/features/playback/hlsRecovery.ts` |

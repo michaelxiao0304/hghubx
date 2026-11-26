@@ -144,7 +144,7 @@ loopback、Windows 的自定义标题栏与注册表代理判断、Android 的 W
    （`gh-proxy.com`、`ghfast.top`）与官方 `github.com` 互为自动回退，流式校验 ZIP/APK 魔数、预期字节数
    与 SHA-256 摘要后原子写入 `<app_cache_dir>/updates/hghubx-tv-update.apk`（启动与清理缓存时自动清除旧包）。
    [`scripts/patch-android-tv.mjs`](../../scripts/patch-android-tv.mjs) 写入 `REQUEST_INSTALL_PACKAGES`
-   与仅暴露 `cacheDir/updates/` 的 `FileProvider`（[`hghubx_tv_file_paths.xml`](../../src-tauri/tv/android/res/xml/hghubx_tv_file_paths.xml)）；
+   并原位替换 Tauri 默认的 `FileProvider`，使 `${applicationId}.fileprovider` 只注册一次；遇到重复声明时构建脚本报错。该 Provider 通过 URI 授权共享更新包，并保留 Tauri 的缓存和外部图片路径（[`hghubx_tv_file_paths.xml`](../../src-tauri/tv/android/res/xml/hghubx_tv_file_paths.xml)）；
    [`src-tauri/tv/android/MainActivity.kt`](../../src-tauri/tv/android/MainActivity.kt) 在 WebView 上注入无参桥接
    `HGhubXTvInstaller.installCachedUpdate()`，Android 8.0+ 未授权时跳转 `ACTION_MANAGE_UNKNOWN_APP_SOURCES`
    并在 `onResume` 返回后自动调起系统安装器。前端状态与交互见 [`src/tv/updater.ts`](../../src/tv/updater.ts)、
