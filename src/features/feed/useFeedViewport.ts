@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { registerOverlayBack } from "../../shared/lib/back";
 import {
   exitDocumentFullscreen, getFullscreenElement, onFullscreenChange,
-  requestElementFullscreen, setTauriWindowFullscreen,
+  preferTauriWindowFullscreen, requestElementFullscreen, setTauriWindowFullscreen,
 } from "../../shared/lib/fullscreen";
 import { useFsOrientation } from "../playback/useFsOrientation";
 import type { VideoHandle } from "../playback";
@@ -327,6 +327,12 @@ export function useFeedViewport({
     wake();
     keepAlive();
     const token = ++fsTokenRef.current;
+    if (isDesktop && preferTauriWindowFullscreen()) {
+      fallbackFsRef.current = true;
+      setFallbackFs(true);
+      setTauriWindowFullscreen(true);
+      return;
+    }
     void (async () => {
       try {
         await requestElementFullscreen(el);
